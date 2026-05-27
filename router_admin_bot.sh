@@ -41,8 +41,8 @@ send_doc(){
     -F chat_id="$CHAT_ID" -F document="@$file" -F caption="$caption" >/dev/null
 }
 
-# Pre‑defined keyboard with buttons (no need to type commands manually)
-KEYBOARD='{"keyboard":[[{"text":"📊 Статус"},{"text":"⚡ Пинг"}],[{"text":"📋 Логи"},{"text":"♻️ Перезагрузка"}]],"one_time_keyboard":false,"resize_keyboard":true}'
+# Pre‑defined keyboard with 3 rows of diagnostic buttons
+KEYBOARD='{"keyboard":[[{"text":"📊 Статус"},{"text":"⚡ Пинг"},{"text":"📈 Нагрузка"}],[{"text":"📋 Логи"},{"text":"🔎 DNS Тест"},{"text":"🛣 Маршрут"}],[{"text":"🛡 Обход"},{"text":"♻️ Перезагрузка"}]],"one_time_keyboard":false,"resize_keyboard":true}'
 
 while true; do
   OFFSET=$(cat "$OFFSET_FILE")
@@ -117,6 +117,12 @@ while true; do
         DISK_USED=$(echo "$DF_OUT" | awk '{print $3}')
         DISK_PCT=$(echo "$DF_OUT" | awk '{print $5}')
         
+        # NAT Active Connections
+        CONN_COUNT=$(wc -l /proc/net/nf_conntrack 2>/dev/null | awk '{print $1}')
+        [ -n "$CONN_COUNT" ] || CONN_COUNT="N/A"
+        CONN_MAX=$(sysctl -n net.netfilter.nf_conntrack_max 2>/dev/null)
+        [ -n "$CONN_MAX" ] || CONN_MAX="N/A"
+        
         WAN_IP=$(ubus call network.interface.wan status | jq -r '.["ipv4-address"][0].address' 2>/dev/null)
         [ -n "$WAN_IP" ] || WAN_IP="N/A"
         
@@ -144,7 +150,7 @@ while true; do
           if echo "$SB_INFO" | grep -q '"running":1'; then
             PODKOP_STATUS="✅ Активен (Sing-box: запущен)"
             
-            # Check SOCKS proxy connectivity (adjust socks port if needed)
+            # Check SOCKS proxy connectivity
             PROXY_TEST_IP=$(curl -s -x socks5h://127.0.0.1:4534 --connect-timeout 4 https://api.ipify.org)
             if [ -n "$PROXY_TEST_IP" ]; then
               PROXY_CONN="✅ Работает (IP: $PROXY_TEST_IP)"
@@ -160,7 +166,7 @@ while true; do
           PROXY_CONN="❌ Отключен"
         fi
         
-        STATUS_MSG="📊 <b>Статус роутера</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🏷 <b>Модель:</b> $MODEL\n💿 <b>Система:</b> $OS_VER\n⏱ <b>Uptime:</b> $UPTIME\n📈 <b>CPU Load:</b> $LOAD_AVG\n🧠 <b>ОЗУ:</b> ${MEM_USED} MB / ${MEM_TOTAL} MB (${MEM_PCT}%)\n💾 <b>Flash (/):</b> ${DISK_USED} / ${DISK_SIZE} (${DISK_PCT})\n🌐 <b>WAN IP:</b> $WAN_IP\n🌍 <b>Внешний IP:</b> $EXT_IP\n━━━━━━━━━━━━━━━━━━━━━━\n🥷 <b>Zapret:</b> $ZAPRET_STATUS\n🕵️ <b>Podkop:</b> $PODKOP_STATUS\n📡 <b>Сервер:</b> <code>$PODKOP_SERVER</code> ($PODKOP_IP)\n🔌 <b>Соединение прокси:</b> $PROXY_CONN\n━━━━━━━━━━━━━━━━━━━━━━"
+        STATUS_MSG="📊 <b>Статус роутера</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🏷 <b>Модель:</b> $MODEL\n💿 <b>Система:</b> $OS_VER\n⏱ <b>Uptime:</b> $UPTIME\n📈 <b>CPU Load:</b> $LOAD_AVG\n🧠 <b>ОЗУ:</b> ${MEM_USED} MB / ${MEM_TOTAL} MB (${MEM_PCT}%)\n💾 <b>Flash (/):</b> ${DISK_USED} / ${DISK_SIZE} (${DISK_PCT})\n👥 <b>Сессии NAT:</b> <code>$CONN_COUNT / $CONN_MAX</code>\n🌐 <b>WAN IP:</b> $WAN_IP\n🌍 <b>Внешний IP:</b> $EXT_IP\n━━━━━━━━━━━━━━━━━━━━━━\n🥷 <b>Zapret:</b> $ZAPRET_STATUS\n🕵️ <b>Podkop:</b> $PODKOP_STATUS\n📡 <b>Сервер:</b> <code>$PODKOP_SERVER</code> ($PODKOP_IP)\n🔌 <b>Соединение прокси:</b> $PROXY_CONN\n━━━━━━━━━━━━━━━━━━━━━━"
         send_msg "$STATUS_MSG" "$KEYBOARD"
         ;;
       "/ping"|"⚡ Пинг")
@@ -176,6 +182,64 @@ while true; do
           PING_ESCAPED=$(echo "$PING_OUT" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
           send_msg "⚠️ <b>Проблема со связью!</b>\nПинг 8.8.8.8 не прошел:\n<pre>$PING_ESCAPED</pre>" "$KEYBOARD"
         fi
+        ;;
+      "📈 Нагрузка"|"/traffic")
+        send_msg "📈 <b>Замеряю скорость на WAN интерфейсе (2 сек)...</b>"
+        WAN_IFACE=$(ubus call network.interface.wan status | jq -r '.l3_device' 2>/dev/null)
+        [ -n "$WAN_IFACE" ] || WAN_IFACE="eth0"
+        
+        RX_1=$(cat /sys/class/net/$WAN_IFACE/statistics/rx_bytes)
+        TX_1=$(cat /sys/class/net/$WAN_IFACE/statistics/tx_bytes)
+        sleep 2
+        RX_2=$(cat /sys/class/net/$WAN_IFACE/statistics/rx_bytes)
+        TX_2=$(cat /sys/class/net/$WAN_IFACE/statistics/tx_bytes)
+        
+        RX_SPEED_BPS=$(( (RX_2 - RX_1) * 8 / 2 ))
+        TX_SPEED_BPS=$(( (TX_2 - TX_1) * 8 / 2 ))
+        
+        if [ "$RX_SPEED_BPS" -ge 1048576 ]; then
+          RX_SPEED="$(( RX_SPEED_BPS / 1048576 )).$(( (RX_SPEED_BPS % 1048576) * 100 / 1048576 )) Mbps"
+        else
+          RX_SPEED="$(( RX_SPEED_BPS / 1024 )) Kbps"
+        fi
+        
+        if [ "$TX_SPEED_BPS" -ge 1048576 ]; then
+          TX_SPEED="$(( TX_SPEED_BPS / 1048576 )).$(( (TX_SPEED_BPS % 1048576) * 100 / 1048576 )) Mbps"
+        else
+          TX_SPEED="$(( TX_SPEED_BPS / 1024 )) Kbps"
+        fi
+        
+        send_msg "📈 <b>Нагрузка WAN ($WAN_IFACE):</b>\n📥 <b>Входящий:</b> $RX_SPEED\n📤 <b>Исходящий:</b> $TX_SPEED" "$KEYBOARD"
+        ;;
+      "🔎 DNS Тест"|"/dns")
+        send_msg "🔎 <b>Выполняю диагностику DNS...</b>"
+        RES_DIR=$(nslookup google.com 2>/dev/null | awk '/Address:/ {print $2}' | grep -v '127.0.0.1' | xargs)
+        RES_BLK=$(nslookup youtube.com 2>/dev/null | awk '/Address:/ {print $2}' | grep -v '127.0.0.1' | xargs)
+        
+        DNS_SERVER=$(nslookup google.com 2>/dev/null | grep "Server:" | awk '{print $2}')
+        [ -n "$DNS_SERVER" ] || DNS_SERVER="System Default"
+        
+        send_msg "🔎 <b>Результаты DNS-диагностики:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🖥 <b>DNS Сервер:</b> <code>$DNS_SERVER</code>\n🔍 <b>google.com:</b> <code>${RES_DIR:-Ошибка}</code>\n📺 <b>youtube.com:</b> <code>${RES_BLK:-Ошибка}</code>\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
+        ;;
+      "🛣 Маршрут"|"/trace")
+        send_msg "🛣 <b>Запуск трассировки до 8.8.8.8 (макс. 10 хопов)...</b>"
+        TRACE_OUT=$(traceroute -m 10 -q 1 -w 2 8.8.8.8 2>&1)
+        TRACE_ESCAPED=$(echo "$TRACE_OUT" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+        send_msg "🛣 <b>Трассировка до 8.8.8.8:</b>\n<pre>$TRACE_ESCAPED</pre>" "$KEYBOARD"
+        ;;
+      "🛡 Обход"|"/bypass")
+        CONN_COUNT=$(wc -l /proc/net/nf_conntrack 2>/dev/null | awk '{print $1}')
+        [ -n "$CONN_COUNT" ] || CONN_COUNT="N/A"
+        CONN_MAX=$(sysctl -n net.netfilter.nf_conntrack_max 2>/dev/null)
+        [ -n "$CONN_MAX" ] || CONN_MAX="N/A"
+        
+        IP_RULES=$(ip rule | grep -E "fwmark|lookup" | head -n 4)
+        [ -n "$IP_RULES" ] || IP_RULES="Правил маршрутизации обхода не найдено"
+        
+        NFT_CHECK=$(nft list sets 2>/dev/null | grep -E "podkop|zapret" | awk '{print $2}' | xargs)
+        [ -n "$NFT_CHECK" ] || NFT_CHECK="Наборов nftables для обхода не найдено"
+        
+        send_msg "🛡 <b>Статус правил обхода и сессий:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n👥 <b>Активные сессии NAT:</b> <code>$CONN_COUNT / $CONN_MAX</code>\n🗺 <b>Правила IP Rules:</b>\n<pre>$IP_RULES</pre>\n🧱 <b>Наборы nftables:</b>\n<code>$NFT_CHECK</code>\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
         ;;
       *)
         send_msg "🤖 Неизвестная команда. Используйте меню кнопок." "$KEYBOARD"
