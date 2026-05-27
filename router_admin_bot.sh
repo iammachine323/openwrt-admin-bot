@@ -41,8 +41,19 @@ send_doc(){
     -F chat_id="$CHAT_ID" -F document="@$file" -F caption="$caption" >/dev/null
 }
 
+# Helper: check HTTP connectivity to URL
+check_url() {
+  local url="$1"
+  local code=$(curl -o /dev/null -s -w "%{http_code}" --connect-timeout 3 "$url")
+  if [ "$code" -gt 0 ]; then
+    echo "✅ Доступен (HTTP $code)"
+  else
+    echo "❌ Недоступен"
+  fi
+}
+
 # Pre‑defined keyboard with 3 rows of diagnostic buttons
-KEYBOARD='{"keyboard":[[{"text":"📊 Статус"},{"text":"⚡ Пинг"},{"text":"📈 Нагрузка"}],[{"text":"📋 Логи"},{"text":"🔎 DNS Тест"},{"text":"🛣 Маршрут"}],[{"text":"🛡 Обход"},{"text":"♻️ Перезагрузка"}]],"one_time_keyboard":false,"resize_keyboard":true}'
+KEYBOARD='{"keyboard":[[{"text":"📊 Статус"},{"text":"⚡ Пинг"},{"text":"📈 Нагрузка"}],[{"text":"📋 Логи"},{"text":"🔎 DNS Тест"},{"text":"🛣 Маршрут"}],[{"text":"🛡 Обход"},{"text":"🔗 Ресурсы"},{"text":"♻️ Перезагрузка"}]],"one_time_keyboard":false,"resize_keyboard":true}'
 
 while true; do
   OFFSET=$(cat "$OFFSET_FILE")
@@ -240,6 +251,16 @@ while true; do
         [ -n "$NFT_CHECK" ] || NFT_CHECK="Наборов nftables для обхода не найдено"
         
         send_msg "🛡 <b>Статус правил обхода и сессий:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n👥 <b>Активные сессии NAT:</b> <code>$CONN_COUNT / $CONN_MAX</code>\n🗺 <b>Правила IP Rules:</b>\n<pre>$IP_RULES</pre>\n🧱 <b>Наборы nftables:</b>\n<code>$NFT_CHECK</code>\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
+        ;;
+      "🔗 Ресурсы"|"/resources")
+        send_msg "🔗 <b>Проверяю доступность веб-ресурсов...</b>"
+        STATUS_TG=$(check_url "https://api.telegram.org")
+        STATUS_YT=$(check_url "https://youtube.com")
+        STATUS_X=$(check_url "https://x.com")
+        STATUS_IG=$(check_url "https://instagram.com")
+        STATUS_RZ=$(check_url "https://rezka.ag")
+        
+        send_msg "🔗 <b>Доступность ресурсов:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n✈️ <b>Telegram API:</b> $STATUS_TG\n📺 <b>YouTube:</b> $STATUS_YT\n🐦 <b>Twitter/X:</b> $STATUS_X\n📸 <b>Instagram:</b> $STATUS_IG\n🎬 <b>HDRezka:</b> $STATUS_RZ\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
         ;;
       *)
         send_msg "🤖 Неизвестная команда. Используйте меню кнопок." "$KEYBOARD"
