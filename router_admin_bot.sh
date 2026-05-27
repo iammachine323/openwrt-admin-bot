@@ -1,16 +1,22 @@
 #!/bin/sh
 # router_admin_bot.sh – Secure Telegram admin bot for OpenWrt router
 # ---------------------------------------------------------------
-TOKEN='YOUR_TELEGRAM_BOT_TOKEN'
+TOKEN='8294185650:AAHWU5N5OgX-AUmp3roZCDIKeaSV1lsG7w0'
 # Whitelisted Telegram user/chat IDs (space‑separated)
-ALLOWED_IDS='YOUR_TELEGRAM_CHAT_ID'
+ALLOWED_IDS='867086686'
 # Use the first allowed ID as the target chat for sending messages
 CHAT_ID=$ALLOWED_IDS
 # File that stores the last processed update offset
 OFFSET_FILE='/tmp/telegram_offset'
+ALLOW_FILE='/etc/router_admin_bot.allow'
 
 # Ensure offset file exists
 [ -f "$OFFSET_FILE" ] || echo 0 > "$OFFSET_FILE"
+
+# Ensure allowed IDs file exists
+if [ ! -f "$ALLOW_FILE" ]; then
+  echo "$ALLOWED_IDS" | tr ' ' '\n' > "$ALLOW_FILE"
+fi
 
 # Helper: send a message (optionally with a custom keyboard)
 #   $1 – text
@@ -19,15 +25,16 @@ send_msg(){
   # Replace literal \n text sequences with actual newlines
   local text=$(echo -e "$1")
   local markup="$2"
+  local target_chat="${FROM_ID:-$CHAT_ID}"
   if [ -n "$markup" ]; then
     curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-      -d chat_id="$CHAT_ID" \
+      -d chat_id="$target_chat" \
       -d parse_mode="HTML" \
       --data-urlencode "text=${text}" \
       -d reply_markup="${markup}" >/dev/null
   else
     curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-      -d chat_id="$CHAT_ID" \
+      -d chat_id="$target_chat" \
       -d parse_mode="HTML" \
       --data-urlencode "text=${text}" >/dev/null
   fi
@@ -37,8 +44,9 @@ send_msg(){
 send_doc(){
   local file="$1"
   local caption="$2"
+  local target_chat="${FROM_ID:-$CHAT_ID}"
   curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendDocument" \
-    -F chat_id="$CHAT_ID" -F document="@$file" -F caption="$caption" >/dev/null
+    -F chat_id="$target_chat" -F document="@$file" -F caption="$caption" >/dev/null
 }
 
 # Helper: check HTTP connectivity to URL
@@ -54,7 +62,7 @@ check_url() {
 }
 
 # Pre‑defined keyboard with 3 rows of diagnostic buttons
-KEYBOARD='{"keyboard":[[{"text":"📊 Статус"},{"text":"⚡ Пинг"},{"text":"📈 Нагрузка"}],[{"text":"📋 Логи"},{"text":"🔎 DNS Тест"},{"text":"🛣 Трассировка"}],[{"text":"🛡 Обход"},{"text":"🔗 Ресурсы"},{"text":"🔍 Диагностика"}],[{"text":"♻️ Перезагрузка"}]],"one_time_keyboard":false,"resize_keyboard":true}'
+KEYBOARD='{"keyboard":[[{"text":"📊 Статус"},{"text":"⚡ Пинг"},{"text":"📈 Нагрузка"}],[{"text":"📋 Логи"},{"text":"🔎 DNS Тест"},{"text":"🛣 Трассировка"}],[{"text":"🛡 Обход"},{"text":"🔗 Ресурсы"},{"text":"🔍 Диагностика"}],[{"text":"♻️ Перезагрузка"},{"text":"👤 Добавить ID"}]],"one_time_keyboard":false,"resize_keyboard":true}'
 
 while true; do
   OFFSET=$(cat "$OFFSET_FILE")
@@ -70,16 +78,17 @@ while true; do
     TEXT=$(echo "$update" | jq -r '.message.text')
     UPDATE_ID=$(echo "$update" | jq '.update_id')
 
-    # Verify sender is whitelisted
+    # Verify sender is whitelisted using allow file
     authorized=false
-    for id in $ALLOWED_IDS; do
+    CURRENT_ALLOWED=$(cat "$ALLOW_FILE" 2>/dev/null)
+    for id in $CURRENT_ALLOWED; do
       if [ "$FROM_ID" = "$id" ]; then
         authorized=true
         break
       fi
     done
     if ! $authorized; then
-      send_msg "❌ Unauthorized user (ID: $FROM_ID)" "$KEYBOARD"
+      send_msg "🔒 <b>Доступ ограничен</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🆔 <b>Ваш Telegram ID:</b> <code>$FROM_ID</code>\n\n💬 Перешлите этот ID администратору @fadeev_digital для получения доступа.\n━━━━━━━━━━━━━━━━━━━━━━"
       OFFSET=$((UPDATE_ID+1))
       echo "$OFFSET" > "$OFFSET_FILE"
       continue
@@ -90,7 +99,7 @@ while true; do
     if [ -f "$STATE_FILE" ]; then
       STATE=$(cat "$STATE_FILE")
       case "$TEXT" in
-        "📊 Статус"|"⚡ Пинг"|"📈 Нагрузка"|"📋 Логи"|"🔎 DNS Тест"|"🛣 Трассировка"|"🛡 Обход"|"🔗 Ресурсы"|"🔍 Диагностика"|"♻️ Перезагрузка"|/start|/reboot|/logs|/status|/ping|/traffic|/dns|/trace|/bypass|/resources|/diagnose)
+        "📊 Статус"|"⚡ Пинг"|"📈 Нагрузка"|"📋 Логи"|"🔎 DNS Тест"|"🛣 Трассировка"|"🛡 Обход"|"🔗 Ресурсы"|"🔍 Диагностика"|"♻️ Перезагрузка"|"👤 Добавить ID"|/start|/reboot|/logs|/status|/ping|/traffic|/dns|/trace|/bypass|/resources|/diagnose)
           # User triggered another command, cancel state silently
           rm -f "$STATE_FILE"
           ;;
@@ -105,6 +114,21 @@ while true; do
               send_msg "🛣 <b>Трассировка до $TARGET:</b>\n<pre>$TRACE_ESCAPED</pre>" "$KEYBOARD"
             else
               send_msg "❌ Некорректный адрес. Отменено." "$KEYBOARD"
+            fi
+            OFFSET=$((UPDATE_ID+1))
+            echo "$OFFSET" > "$OFFSET_FILE"
+            continue
+          elif [ "$STATE" = "AWAIT_ADD_USER_ID" ]; then
+            NEW_ID=$(echo "$TEXT" | tr -cd '0-9')
+            if [ -n "$NEW_ID" ]; then
+              if grep -q -w "$NEW_ID" "$ALLOW_FILE" 2>/dev/null; then
+                send_msg "👤 <b>Управление доступом</b>\n━━━━━━━━━━━━━━━━━━━━━━\n⚠️ ID <code>$NEW_ID</code> уже находится в списке разрешенных.\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
+              else
+                echo "$NEW_ID" >> "$ALLOW_FILE"
+                send_msg "👤 <b>Управление доступом</b>\n━━━━━━━━━━━━━━━━━━━━━━\n✅ ID <code>$NEW_ID</code> успешно добавлен в список разрешенных пользователей роутера!\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
+              fi
+            else
+              send_msg "❌ Некорректный ID (должен состоять только из цифр). Отменено." "$KEYBOARD"
             fi
             OFFSET=$((UPDATE_ID+1))
             echo "$OFFSET" > "$OFFSET_FILE"
@@ -218,10 +242,10 @@ while true; do
           MIN=$(echo "$RTT" | cut -d'/' -f1)
           AVG=$(echo "$RTT" | cut -d'/' -f2)
           MAX=$(echo "$RTT" | cut -d'/' -f3)
-          send_msg "✅ <b>Интернет доступен!</b>\nПакеты: 3/3 успешно получены\nЗадержка: <b>$AVG мс</b> (мин: $MIN / макс: $MAX)" "$KEYBOARD"
+          send_msg "⚡ <b>Результаты пинга (8.8.8.8)</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🟢 <b>Статус:</b> Доступен\n📦 <b>Пакеты:</b> <code>3/3 получено</code>\n⏱ <b>Задержка:</b> <code>$AVG мс</code> (микро: <code>$MIN</code> / макс: <code>$MAX</code>)\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
         else
           PING_ESCAPED=$(echo "$PING_OUT" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
-          send_msg "⚠️ <b>Проблема со связью!</b>\nПинг 8.8.8.8 не прошел:\n<pre>$PING_ESCAPED</pre>" "$KEYBOARD"
+          send_msg "⚠️ <b>Проблема со связью!</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🔴 <b>Пинг не прошел:</b>\n<pre>$PING_ESCAPED</pre>\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
         fi
         ;;
       "📈 Нагрузка"|"/traffic")
@@ -250,7 +274,7 @@ while true; do
           TX_SPEED="$(( TX_SPEED_BPS / 1024 )) Kbps"
         fi
         
-        send_msg "📈 <b>Нагрузка WAN ($WAN_IFACE):</b>\n📥 <b>Входящий:</b> $RX_SPEED\n📤 <b>Исходящий:</b> $TX_SPEED" "$KEYBOARD"
+        send_msg "📈 <b>Нагрузка WAN ($WAN_IFACE)</b>\n━━━━━━━━━━━━━━━━━━━━━━\n📥 <b>Входящий трафик:</b> <code>$RX_SPEED</code>\n📤 <b>Исходящий трафик:</b> <code>$TX_SPEED</code>\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
         ;;
       "🔎 DNS Тест"|"/dns")
         send_msg "🔎 <b>Выполняю диагностику DNS...</b>"
@@ -420,6 +444,10 @@ while true; do
         STATUS_RZ=$(check_url "https://rezka.ag")
         
         send_msg "🔗 <b>Доступность ресурсов:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n✈️ <b>Telegram API:</b> $STATUS_TG\n📺 <b>YouTube:</b> $STATUS_YT\n🐦 <b>Twitter/X:</b> $STATUS_X\n📸 <b>Instagram:</b> $STATUS_IG\n🎬 <b>HDRezka:</b> $STATUS_RZ\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
+        ;;
+      "👤 Добавить ID")
+        echo "AWAIT_ADD_USER_ID" > "/tmp/bot_state_${FROM_ID}"
+        send_msg "👤 <b>Введите Telegram ID нового пользователя:</b>\n(Только цифры, например: <code>987654321</code>)"
         ;;
       *)
         send_msg "🤖 Неизвестная команда. Используйте меню кнопок." "$KEYBOARD"

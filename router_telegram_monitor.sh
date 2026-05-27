@@ -1,8 +1,8 @@
 #!/bin/sh
 # Router monitoring script – sends Telegram alerts on connectivity & service state changes
 
-TOKEN='YOUR_TELEGRAM_BOT_TOKEN'
-CHAT_ID='YOUR_TELEGRAM_CHAT_ID'
+TOKEN='8294185650:AAHWU5N5OgX-AUmp3roZCDIKeaSV1lsG7w0'
+CHAT_ID='867086686'
 
 # State files to persist conditions across script invocations (cron run every 5 mins)
 INTERNET_STATE_FILE='/tmp/monitor_internet_down'
@@ -69,7 +69,7 @@ fi
 if [ "$PODKOP_OK" = "1" ]; then
   # Podkop is healthy
   if [ -f "$PODKOP_STATE_FILE" ]; then
-    send_msg "✅ <b>Сервис Podkop (Sing-box) успешно восстановил работу!</b>"
+    send_msg "✅ <b>Служба Podkop (Sing-box) успешно запущена!</b>\n🕵️ Трафик маршрутизируется в штатном режиме."
     rm -f "$PODKOP_STATE_FILE"
   fi
   
@@ -79,20 +79,26 @@ if [ "$PODKOP_OK" = "1" ]; then
   if [ -n "$PROXY_IP" ]; then
     # Proxy works
     if [ -f "$PROXY_STATE_FILE" ]; then
-      send_msg "✅ <b>Соединение с прокси-сервером Podkop восстановлено!</b>"
+      send_msg "✅ <b>Соединение с прокси-сервером Podkop восстановлено!</b>\n🥷 Обход блокировок снова работает в штатном режиме."
       rm -f "$PROXY_STATE_FILE"
     fi
   else
     # Proxy does not work
     if [ ! -f "$PROXY_STATE_FILE" ] && [ ! -f "$INTERNET_STATE_FILE" ]; then
-      send_msg "⚠️ <b>Внимание: Соединение с прокси-сервером Podkop пропало (хотя интернет доступен)!</b>"
+      DNS_FALLBACKS=$(uci get dhcp.@dnsmasq[0].server 2>/dev/null | tr ' ' '\n' | grep -v '127.0.0.42' | xargs | tr ' ' ',')
+      [ -n "$DNS_FALLBACKS" ] || DNS_FALLBACKS="77.88.8.8, 77.88.8.1"
+      MSG="⚠️ <b>Сбой прокси-соединения (Podkop)</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🌍 <b>Интернет:</b> Доступен\n🥷 <b>Обход блокировок:</b> ❌ Приостановлен\n🔒 <b>Резервные DNS:</b> <code>$DNS_FALLBACKS</code>\n━━━━━━━━━━━━━━━━━━━━━━\n💡 Запросы к заблокированным сайтам временно пойдут напрямую через резервные DNS."
+      send_msg "$MSG"
       touch "$PROXY_STATE_FILE"
     fi
   fi
 else
   # Podkop is NOT healthy
   if [ ! -f "$PODKOP_STATE_FILE" ]; then
-    send_msg "⚠️ <b>Внимание: Сервис Podkop упал или Sing-box не запущен!</b>"
+    DNS_FALLBACKS=$(uci get dhcp.@dnsmasq[0].server 2>/dev/null | tr ' ' '\n' | grep -v '127.0.0.42' | xargs | tr ' ' ',')
+    [ -n "$DNS_FALLBACKS" ] || DNS_FALLBACKS="77.88.8.8, 77.88.8.1"
+    MSG="⚠️ <b>Сбой службы Podkop (Sing-box)</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🌍 <b>Интернет:</b> Доступен\n🕵️ <b>Служба:</b> ❌ Остановлена\n🔒 <b>Резервные DNS:</b> <code>$DNS_FALLBACKS</code>\n━━━━━━━━━━━━━━━━━━━━━━\n💡 Запросы к заблокированным сайтам временно пойдут напрямую через резервные DNS."
+    send_msg "$MSG"
     touch "$PODKOP_STATE_FILE"
   fi
   rm -f "$PROXY_STATE_FILE"
