@@ -54,7 +54,7 @@ check_url() {
 }
 
 # Pre‑defined keyboard with 3 rows of diagnostic buttons
-KEYBOARD='{"keyboard":[[{"text":"📊 Статус"},{"text":"⚡ Пинг"},{"text":"📈 Нагрузка"}],[{"text":"📋 Логи"},{"text":"🔎 DNS Тест"},{"text":"🛣 Маршрут"}],[{"text":"🛡 Обход"},{"text":"🔗 Ресурсы"},{"text":"♻️ Перезагрузка"}]],"one_time_keyboard":false,"resize_keyboard":true}'
+KEYBOARD='{"keyboard":[[{"text":"📊 Статус"},{"text":"⚡ Пинг"},{"text":"📈 Нагрузка"}],[{"text":"📋 Логи"},{"text":"🔎 DNS Тест"},{"text":"🛡 Маршрут"}],[{"text":"🛡 Обход"},{"text":"🔗 Ресурсы"},{"text":"♻️ Перезагрузка"}]],"one_time_keyboard":false,"resize_keyboard":true}'
 
 while true; do
   OFFSET=$(cat "$OFFSET_FILE")
@@ -83,6 +83,35 @@ while true; do
       OFFSET=$((UPDATE_ID+1))
       echo "$OFFSET" > "$OFFSET_FILE"
       continue
+    fi
+
+    # Interactive state machine check
+    STATE_FILE="/tmp/bot_state_${FROM_ID}"
+    if [ -f "$STATE_FILE" ]; then
+      STATE=$(cat "$STATE_FILE")
+      case "$TEXT" in
+        "📊 Статус"|"⚡ Пинг"|"📈 Нагрузка"|"📋 Логи"|"🔎 DNS Тест"|"🛡 Маршрут"|"🛡 Обход"|"🔗 Ресурсы"|"♻️ Перезагрузка"|/start|/reboot|/logs|/status|/ping|/traffic|/dns|/trace|/bypass|/resources)
+          # User triggered another command, cancel state silently
+          rm -f "$STATE_FILE"
+          ;;
+        *)
+          rm -f "$STATE_FILE"
+          if [ "$STATE" = "AWAIT_TRACE_TARGET" ]; then
+            TARGET=$(echo "$TEXT" | tr -cd 'a-zA-Z0-9.-')
+            if [ -n "$TARGET" ]; then
+              send_msg "🛣 <b>Запуск трассировки до $TARGET (макс. 10 хопов)...</b>"
+              TRACE_OUT=$(traceroute -m 10 -q 1 -w 2 "$TARGET" 2>&1)
+              TRACE_ESCAPED=$(echo "$TRACE_OUT" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+              send_msg "🛣 <b>Трассировка до $TARGET:</b>\n<pre>$TRACE_ESCAPED</pre>" "$KEYBOARD"
+            else
+              send_msg "❌ Некорректный адрес. Отменено." "$KEYBOARD"
+            fi
+            OFFSET=$((UPDATE_ID+1))
+            echo "$OFFSET" > "$OFFSET_FILE"
+            continue
+          fi
+          ;;
+      esac
     fi
 
     case "$TEXT" in
@@ -234,10 +263,8 @@ while true; do
         send_msg "🔎 <b>Результаты DNS-диагностики:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🖥 <b>DNS Сервер:</b> <code>$DNS_SERVER</code>\n🔍 <b>google.com:</b> <code>${RES_DIR:-Ошибка}</code>\n📺 <b>youtube.com:</b> <code>${RES_BLK:-Ошибка}</code>\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
         ;;
       "🛣 Маршрут"|"/trace")
-        send_msg "🛣 <b>Запуск трассировки до 8.8.8.8 (макс. 10 хопов)...</b>"
-        TRACE_OUT=$(traceroute -m 10 -q 1 -w 2 8.8.8.8 2>&1)
-        TRACE_ESCAPED=$(echo "$TRACE_OUT" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
-        send_msg "🛣 <b>Трассировка до 8.8.8.8:</b>\n<pre>$TRACE_ESCAPED</pre>" "$KEYBOARD"
+        echo "AWAIT_TRACE_TARGET" > "/tmp/bot_state_${FROM_ID}"
+        send_msg "📝 <b>Введите адрес или IP для трассировки:</b>\n(Например: <code>google.com</code> или <code>8.8.8.8</code>)"
         ;;
       "🛡 Обход"|"/bypass")
         CONN_COUNT=$(wc -l /proc/net/nf_conntrack 2>/dev/null | awk '{print $1}')
@@ -251,7 +278,7 @@ while true; do
         NFT_CHECK=$(nft list sets 2>/dev/null | grep -E "podkop|zapret" | awk '{print $2}' | xargs)
         [ -n "$NFT_CHECK" ] || NFT_CHECK="Наборов nftables для обхода не найдено"
         
-        send_msg "🛡 <b>Статус правил обхода и сессий:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n👥 <b>Активные сессии NAT:</b> <code>$CONN_COUNT / $CONN_MAX</code>\n🗺 <b>Правила IP Rules:</b>\n<pre>$IP_RULES</pre>\n🧱 <b>Наборов nftables:</b>\n<code>$NFT_CHECK</code>\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
+        send_msg "🛡 <b>Статус правил обхода и сессий:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n👥 <b>Активные сессии NAT:</b> <code>$CONN_COUNT / $CONN_MAX</code>\n🗺 <b>Правила IP Rules:</b>\n<pre>$IP_RULES</pre>\n🧱 <b>Наборы nftables:</b>\n<code>$NFT_CHECK</code>\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
         ;;
       "🔗 Ресурсы"|"/resources")
         send_msg "🔗 <b>Проверяю доступность веб-ресурсов...</b>"
