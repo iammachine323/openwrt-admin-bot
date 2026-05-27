@@ -44,8 +44,9 @@ send_doc(){
 # Helper: check HTTP connectivity to URL
 check_url() {
   local url="$1"
-  local code=$(curl -o /dev/null -s -w "%{http_code}" --connect-timeout 3 "$url")
-  if [ "$code" -gt 0 ]; then
+  # Force IPv4 (-4) to prevent waiting on non-routable IPv6, and relax timeout to 6s
+  local code=$(curl -4 -o /dev/null -s -w "%{http_code}" --connect-timeout 6 "$url")
+  if [ "$code" -gt 0 ] 2>/dev/null; then
     echo "✅ Доступен (HTTP $code)"
   else
     echo "❌ Недоступен"
@@ -250,7 +251,7 @@ while true; do
         NFT_CHECK=$(nft list sets 2>/dev/null | grep -E "podkop|zapret" | awk '{print $2}' | xargs)
         [ -n "$NFT_CHECK" ] || NFT_CHECK="Наборов nftables для обхода не найдено"
         
-        send_msg "🛡 <b>Статус правил обхода и сессий:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n👥 <b>Активные сессии NAT:</b> <code>$CONN_COUNT / $CONN_MAX</code>\n🗺 <b>Правила IP Rules:</b>\n<pre>$IP_RULES</pre>\n🧱 <b>Наборы nftables:</b>\n<code>$NFT_CHECK</code>\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
+        send_msg "🛡 <b>Статус правил обхода и сессий:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n👥 <b>Активные сессии NAT:</b> <code>$CONN_COUNT / $CONN_MAX</code>\n🗺 <b>Правила IP Rules:</b>\n<pre>$IP_RULES</pre>\n🧱 <b>Наборов nftables:</b>\n<code>$NFT_CHECK</code>\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
         ;;
       "🔗 Ресурсы"|"/resources")
         send_msg "🔗 <b>Проверяю доступность веб-ресурсов...</b>"
