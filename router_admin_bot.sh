@@ -54,7 +54,7 @@ check_url() {
 }
 
 # Pre‑defined keyboard with 3 rows of diagnostic buttons
-KEYBOARD='{"keyboard":[[{"text":"📊 Статус"},{"text":"⚡ Пинг"},{"text":"📈 Нагрузка"}],[{"text":"📋 Логи"},{"text":"🔎 DNS Тест"},{"text":"🛡 Маршрут"}],[{"text":"🛡 Обход"},{"text":"🔗 Ресурсы"},{"text":"♻️ Перезагрузка"}]],"one_time_keyboard":false,"resize_keyboard":true}'
+KEYBOARD='{"keyboard":[[{"text":"📊 Статус"},{"text":"⚡ Пинг"},{"text":"📈 Нагрузка"}],[{"text":"📋 Логи"},{"text":"🔎 DNS Тест"},{"text":"🛣 Маршрут"}],[{"text":"🛡 Обход"},{"text":"🔗 Ресурсы"},{"text":"♻️ Перезагрузка"}]],"one_time_keyboard":false,"resize_keyboard":true}'
 
 while true; do
   OFFSET=$(cat "$OFFSET_FILE")
@@ -90,7 +90,7 @@ while true; do
     if [ -f "$STATE_FILE" ]; then
       STATE=$(cat "$STATE_FILE")
       case "$TEXT" in
-        "📊 Статус"|"⚡ Пинг"|"📈 Нагрузка"|"📋 Логи"|"🔎 DNS Тест"|"🛡 Маршрут"|"🛡 Обход"|"🔗 Ресурсы"|"♻️ Перезагрузка"|/start|/reboot|/logs|/status|/ping|/traffic|/dns|/trace|/bypass|/resources)
+        "📊 Статус"|"⚡ Пинг"|"📈 Нагрузка"|"📋 Логи"|"🔎 DNS Тест"|"🛣 Маршрут"|"🛡 Обход"|"🔗 Ресурсы"|"♻️ Перезагрузка"|/start|/reboot|/logs|/status|/ping|/traffic|/dns|/trace|/bypass|/resources)
           # User triggered another command, cancel state silently
           rm -f "$STATE_FILE"
           ;;
@@ -100,7 +100,7 @@ while true; do
             TARGET=$(echo "$TEXT" | tr -cd 'a-zA-Z0-9.-')
             if [ -n "$TARGET" ]; then
               send_msg "🛣 <b>Запуск трассировки до $TARGET (макс. 10 хопов)...</b>"
-              TRACE_OUT=$(traceroute -m 10 -q 1 -w 2 "$TARGET" 2>&1)
+              TRACE_OUT=$(traceroute -I -m 10 -q 1 -w 2 "$TARGET" 2>&1)
               TRACE_ESCAPED=$(echo "$TRACE_OUT" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
               send_msg "🛣 <b>Трассировка до $TARGET:</b>\n<pre>$TRACE_ESCAPED</pre>" "$KEYBOARD"
             else
@@ -207,7 +207,7 @@ while true; do
           PROXY_CONN="❌ Отключен"
         fi
         
-        STATUS_MSG="📊 <b>Статус роутера</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🏷 <b>Модель:</b> $MODEL\n💿 <b>Система:</b> $OS_VER\n⏱ <b>Uptime:</b> $UPTIME\n📈 <b>CPU Load:</b> $LOAD_AVG\n🧠 <b>ОЗУ:</b> ${MEM_USED} MB / ${MEM_TOTAL} MB (${MEM_PCT}%)\n💾 <b>Flash (/):</b> ${DISK_USED} / ${DISK_SIZE} (${DISK_PCT})\n👥 <b>Сессии NAT:</b> <code>$CONN_COUNT / $CONN_MAX</code>\n🌐 <b>WAN IP:</b> $WAN_IP\n🌍 <b>Внешний IP:</b> $EXT_IP\n━━━━━━━━━━━━━━━━━━━━━━\n🥷 <b>Zapret:</b> $ZAPRET_STATUS\n🕵️ <b>Podkop:</b> $PODKOP_STATUS\n📡 <b>Сервер:</b> <code>$PODKOP_SERVER</code> ($PODKOP_IP)\n🔌 <b>Соединение прокси:</b> $PROXY_CONN\n━━━━━━━━━━━━━━━━━━━━━━"
+        STATUS_MSG="📊 <b>Статус роутера (Rosenberg)</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🏷 <b>Модель:</b> $MODEL\n💿 <b>Система:</b> $OS_VER\n⏱ <b>Uptime:</b> $UPTIME\n📈 <b>CPU Load:</b> $LOAD_AVG\n🧠 <b>ОЗУ:</b> ${MEM_USED} MB / ${MEM_TOTAL} MB (${MEM_PCT}%)\n💾 <b>Flash (/):</b> ${DISK_USED} / ${DISK_SIZE} (${DISK_PCT})\n👥 <b>Сессии NAT:</b> <code>$CONN_COUNT / $CONN_MAX</code>\n🌐 <b>WAN IP:</b> $WAN_IP\n🌍 <b>Внешний IP:</b> $EXT_IP\n━━━━━━━━━━━━━━━━━━━━━━\n🥷 <b>Zapret:</b> $ZAPRET_STATUS\n🕵️ <b>Podkop:</b> $PODKOP_STATUS\n📡 <b>Сервер:</b> <code>$PODKOP_SERVER</code> ($PODKOP_IP)\n🔌 <b>Соединение прокси:</b> $PROXY_CONN\n━━━━━━━━━━━━━━━━━━━━━━"
         send_msg "$STATUS_MSG" "$KEYBOARD"
         ;;
       "/ping"|"⚡ Пинг")
