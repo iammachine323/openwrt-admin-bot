@@ -54,7 +54,7 @@ check_url() {
 }
 
 # Pre‑defined keyboard with 3 rows of diagnostic buttons
-KEYBOARD='{"keyboard":[[{"text":"📊 Статус"},{"text":"⚡ Пинг"},{"text":"📈 Нагрузка"}],[{"text":"📋 Логи"},{"text":"🔎 DNS Тест"},{"text":"🛣 Маршрут"}],[{"text":"🛡 Обход"},{"text":"🔗 Ресурсы"},{"text":"♻️ Перезагрузка"}]],"one_time_keyboard":false,"resize_keyboard":true}'
+KEYBOARD='{"keyboard":[[{"text":"📊 Статус"},{"text":"⚡ Пинг"},{"text":"📈 Нагрузка"}],[{"text":"📋 Логи"},{"text":"🔎 DNS Тест"},{"text":"🛣 Трассировка"}],[{"text":"🛡 Обход"},{"text":"🔗 Ресурсы"},{"text":"♻️ Перезагрузка"}]],"one_time_keyboard":false,"resize_keyboard":true}'
 
 while true; do
   OFFSET=$(cat "$OFFSET_FILE")
@@ -90,7 +90,7 @@ while true; do
     if [ -f "$STATE_FILE" ]; then
       STATE=$(cat "$STATE_FILE")
       case "$TEXT" in
-        "📊 Статус"|"⚡ Пинг"|"📈 Нагрузка"|"📋 Логи"|"🔎 DNS Тест"|"🛣 Маршрут"|"🛡 Обход"|"🔗 Ресурсы"|"♻️ Перезагрузка"|/start|/reboot|/logs|/status|/ping|/traffic|/dns|/trace|/bypass|/resources)
+        "📊 Статус"|"⚡ Пинг"|"📈 Нагрузка"|"📋 Логи"|"🔎 DNS Тест"|"🛣 Трассировка"|"🛡 Обход"|"🔗 Ресурсы"|"♻️ Перезагрузка"|/start|/reboot|/logs|/status|/ping|/traffic|/dns|/trace|/bypass|/resources)
           # User triggered another command, cancel state silently
           rm -f "$STATE_FILE"
           ;;
@@ -262,7 +262,7 @@ while true; do
         
         send_msg "🔎 <b>Результаты DNS-диагностики:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🖥 <b>DNS Сервер:</b> <code>$DNS_SERVER</code>\n🔍 <b>google.com:</b> <code>${RES_DIR:-Ошибка}</code>\n📺 <b>youtube.com:</b> <code>${RES_BLK:-Ошибка}</code>\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
         ;;
-      "🛣 Маршрут"|"/trace")
+      "🛣 Трассировка"|"/trace")
         echo "AWAIT_TRACE_TARGET" > "/tmp/bot_state_${FROM_ID}"
         send_msg "📝 <b>Введите адрес или IP для трассировки:</b>\n(Например: <code>google.com</code> или <code>8.8.8.8</code>)"
         ;;
