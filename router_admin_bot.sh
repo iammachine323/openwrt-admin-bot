@@ -54,7 +54,7 @@ check_url() {
 }
 
 # Pre‑defined keyboard with 3 rows of diagnostic buttons
-KEYBOARD='{"keyboard":[[{"text":"📊 Статус"},{"text":"⚡ Пинг"},{"text":"📈 Нагрузка"}],[{"text":"📋 Логи"},{"text":"🔎 DNS Тест"},{"text":"🛣 Трассировка"}],[{"text":"🛡 Обход"},{"text":"🔗 Ресурсы"},{"text":"♻️ Перезагрузка"}]],"one_time_keyboard":false,"resize_keyboard":true}'
+KEYBOARD='{"keyboard":[[{"text":"📊 Статус"},{"text":"⚡ Пинг"},{"text":"📈 Нагрузка"}],[{"text":"📋 Логи"},{"text":"🔎 DNS Тест"},{"text":"🛣 Трассировка"}],[{"text":"🛡 Обход"},{"text":"🔗 Ресурсы"},{"text":"🔍 Диагностика"}],[{"text":"♻️ Перезагрузка"}]],"one_time_keyboard":false,"resize_keyboard":true}'
 
 while true; do
   OFFSET=$(cat "$OFFSET_FILE")
@@ -90,7 +90,7 @@ while true; do
     if [ -f "$STATE_FILE" ]; then
       STATE=$(cat "$STATE_FILE")
       case "$TEXT" in
-        "📊 Статус"|"⚡ Пинг"|"📈 Нагрузка"|"📋 Логи"|"🔎 DNS Тест"|"🛣 Трассировка"|"🛡 Обход"|"🔗 Ресурсы"|"♻️ Перезагрузка"|/start|/reboot|/logs|/status|/ping|/traffic|/dns|/trace|/bypass|/resources)
+        "📊 Статус"|"⚡ Пинг"|"📈 Нагрузка"|"📋 Логи"|"🔎 DNS Тест"|"🛣 Трассировка"|"🛡 Обход"|"🔗 Ресурсы"|"🔍 Диагностика"|"♻️ Перезагрузка"|/start|/reboot|/logs|/status|/ping|/traffic|/dns|/trace|/bypass|/resources|/diagnose)
           # User triggered another command, cancel state silently
           rm -f "$STATE_FILE"
           ;;
@@ -278,7 +278,138 @@ while true; do
         NFT_CHECK=$(nft list sets 2>/dev/null | grep -E "podkop|zapret" | awk '{print $2}' | xargs)
         [ -n "$NFT_CHECK" ] || NFT_CHECK="Наборов nftables для обхода не найдено"
         
-        send_msg "🛡 <b>Статус правил обхода и сессий:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n👥 <b>Активные сессии NAT:</b> <code>$CONN_COUNT / $CONN_MAX</code>\n🗺 <b>Правила IP Rules:</b>\n<pre>$IP_RULES</pre>\n🧱 <b>Наборы nftables:</b>\n<code>$NFT_CHECK</code>\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
+        send_msg "🛡 <b>Статус правил обхода и сессий:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n👥 <b>Активные сессии NAT:</b> <code>$CONN_COUNT / $CONN_MAX</code>\n🗺 <b>Правила IP Rules:</b>\n<pre>$IP_RULES</pre>\n🧱 <b>Наборов nftables:</b>\n<code>$NFT_CHECK</code>\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
+        ;;
+      "🔍 Диагностика"|"/diagnose")
+        send_msg "🔍 <b>Запуск комплексной диагностики сети...</b>\nЭто займет около 15-20 секунд."
+        
+        # 1. Hardware Status (CPU Temp)
+        CPU_TEMP_RAW=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
+        if [ -n "$CPU_TEMP_RAW" ]; then
+          CPU_TEMP=$(( CPU_TEMP_RAW / 1000 ))
+        else
+          CPU_TEMP="N/A"
+        fi
+        
+        # 2. Link Flapping check
+        LINK_FLAPS=$(logread | grep -E "eth0|link down|link up" | grep -E -c "link down|link up|down|up")
+        [ -n "$LINK_FLAPS" ] || LINK_FLAPS=0
+        
+        # 3. Physical Link Check (eth0 carrier)
+        CARRIER_STATE=$(cat /sys/class/net/eth0/carrier 2>/dev/null)
+        if [ "$CARRIER_STATE" = "1" ]; then
+          PHYS_LINK="✅ Физический линк: ОК (eth0 up)"
+          LINK_UP=1
+        else
+          PHYS_LINK="❌ Физический линк: Отсутствует (eth0 down)"
+          LINK_UP=0
+        fi
+        
+        # 4. DHCP WAN IP check
+        WAN_STATUS=$(ubus call network.interface.wan status 2>/dev/null)
+        WAN_IP=$(echo "$WAN_STATUS" | jq -r '.["ipv4-address"][0].address' 2>/dev/null)
+        if [ -n "$WAN_IP" ] && [ "$WAN_IP" != "null" ]; then
+          WAN_IP_STATE="✅ WAN IP получен: <code>$WAN_IP</code>"
+          HAS_WAN_IP=1
+        else
+          WAN_IP_STATE="❌ WAN IP: Не получен"
+          HAS_WAN_IP=0
+        fi
+        
+        # 5. Local Gateway Ping Check
+        GATEWAY=$(echo "$WAN_STATUS" | jq -r '.["route"][0].nexthop' 2>/dev/null)
+        [ -n "$GATEWAY" ] && [ "$GATEWAY" != "null" ] || GATEWAY=$(ip route | grep default | awk '{print $3}' | head -n 1)
+        [ -n "$GATEWAY" ] || GATEWAY="192.168.1.254"
+        
+        GW_PING_OK=0
+        GW_LOSS=100
+        GW_RTT="N/A"
+        if [ "$LINK_UP" -eq 1 ]; then
+          GW_PING_OUT=$(ping -c 5 -W 2 "$GATEWAY" 2>&1)
+          if echo "$GW_PING_OUT" | grep -q -E "packets received|received"; then
+            GW_REC=$(echo "$GW_PING_OUT" | grep -E "packets transmitted|received" | awk -F', ' '{print $2}' | awk '{print $1}')
+            GW_LOSS=$(( 100 - (GW_REC * 20) ))
+            if [ "$GW_REC" -gt 0 ]; then
+              GW_PING_OK=1
+              GW_RTT=$(echo "$GW_PING_OUT" | tail -n 1 | awk '{print $4}' | cut -d'/' -f2)
+            fi
+          fi
+        fi
+        
+        # 6. Internet Routing Ping Check (8.8.8.8)
+        INT_PING_OK=0
+        INT_LOSS=100
+        INT_RTT="N/A"
+        if [ "$GW_PING_OK" -eq 1 ]; then
+          INT_PING_OUT=$(ping -c 5 -W 2 8.8.8.8 2>&1)
+          if echo "$INT_PING_OUT" | grep -q -E "packets received|received"; then
+            INT_REC=$(echo "$INT_PING_OUT" | grep -E "packets transmitted|received" | awk -F', ' '{print $2}' | awk '{print $1}')
+            INT_LOSS=$(( 100 - (INT_REC * 20) ))
+            if [ "$INT_REC" -gt 0 ]; then
+              INT_PING_OK=1
+              INT_RTT=$(echo "$INT_PING_OUT" | tail -n 1 | awk '{print $4}' | cut -d'/' -f2)
+            fi
+          fi
+        fi
+        
+        # 7. DNS Check
+        DNS_OK=0
+        DNS_MS="N/A"
+        DNS_SERVER=$(nslookup google.com 2>/dev/null | grep "Server:" | awk '{print $2}')
+        [ -n "$DNS_SERVER" ] || DNS_SERVER="System Default"
+        
+        if [ "$INT_PING_OK" -eq 1 ]; then
+          START_TIME=$(date +%s%3N)
+          NS_OUT=$(nslookup google.com 2>/dev/null)
+          END_TIME=$(date +%s%3N)
+          if echo "$NS_OUT" | grep -q "Address"; then
+            DNS_OK=1
+            DNS_MS=$(( END_TIME - START_TIME ))
+          fi
+        fi
+        
+        # 8. Proxy / VPN Check (SOCKS connection)
+        PROXY_OK=0
+        PROXY_IP="N/A"
+        if [ "$(/etc/init.d/zapret status 2>&1)" = "running" ] || [ "$(/etc/init.d/sing-box status 2>/dev/null || ubus call service list | grep -q sing-box)" = "running" ] || [ -f /var/run/sing-box.pid ]; then
+          PROXY_TEST_IP=$(curl -s -x socks5h://127.0.0.1:4534 --connect-timeout 4 https://api.ipify.org)
+          if [ -n "$PROXY_TEST_IP" ]; then
+            PROXY_OK=1
+            PROXY_IP="$PROXY_TEST_IP"
+          fi
+        fi
+        
+        # 9. Build Recommendation
+        REC=""
+        if [ "$LINK_UP" -eq 0 ]; then
+          REC="❌ <b>Критическая ошибка:</b> Физический кабель провайдера не подключен или поврежден. Проверьте WAN-порт роутера."
+        elif [ "$HAS_WAN_IP" -eq 0 ]; then
+          REC="❌ <b>Ошибка:</b> Физическое соединение с провайдером есть, но IP-адрес не получен. Возможно, порт заблокирован за неуплату или проводятся тех. работы."
+        elif [ "$GW_PING_OK" -eq 0 ]; then
+          REC="❌ <b>Ошибка:</b> Локальный шлюз провайдера (<code>$GATEWAY</code>) не отвечает на пинги. Проблема на оборудовании провайдера в подъезде/доме."
+        elif [ "$INT_PING_OK" -eq 0 ]; then
+          REC="❌ <b>Ошибка:</b> Локальная сеть работает, но нет выхода в глобальный интернет. Возможна авария на стороне провайдера."
+        elif [ "$INT_LOSS" -gt 20 ]; then
+          REC="⚠️ <b>Предупреждение:</b> Интернет работает нестабильно, обнаружено <b>$INT_LOSS% потерь пакетов</b>. Возможен плохой контакт кабеля."
+        elif [ "$DNS_OK" -eq 0 ]; then
+          REC="❌ <b>Ошибка DNS:</b> Интернет доступен по IP, но имена не резолвятся. Проверьте DNS-серверы (текущий: <code>$DNS_SERVER</code>)."
+        elif [ "$PROXY_OK" -eq 0 ]; then
+          REC="⚠️ <b>Предупреждение:</b> Обычный интернет доступен, но заблокированные ресурсы не откроются. VPN-туннель (Sing-box) не активен."
+        else
+          REC="✅ <b>Диагностика успешна:</b> Все системы работают штатно. Соединение стабильное, DNS работает, прокси-туннель активен."
+        fi
+        
+        if [ "$CPU_TEMP" != "N/A" ] && [ "$CPU_TEMP" -gt 75 ]; then
+          REC="${REC}\n⚠️ <b>Предупреждение о перегреве:</b> Процессор роутера нагрелся до <b>${CPU_TEMP}°C</b>! Обеспечьте вентиляцию."
+        fi
+        
+        if [ "$LINK_FLAPS" -gt 0 ]; then
+          REC="${REC}\n⚠️ <b>Предупреждение о линке:</b> Зафиксировано <b>$LINK_FLAPS</b> изменений статуса линка WAN. Возможны проблемы с кабелем."
+        fi
+        
+        DIAG_MSG="🔍 <b>Результаты полной диагностики сети:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🌡 <b>CPU Temp:</b> <code>${CPU_TEMP}°C</code> (Линк-флап: ${LINK_FLAPS})\n🔗 <b>Линк WAN:</b> $([ "$LINK_UP" -eq 1 ] && echo "✅ ОК" || echo "❌ Down")\n🌐 <b>WAN IP:</b> $([ "$HAS_WAN_IP" -eq 1 ] && echo "✅ Получен ($WAN_IP)" || echo "❌ Нет")\n🚪 <b>Шлюз ($GATEWAY):</b> $([ "$GW_PING_OK" -eq 1 ] && echo "✅ Доступен (RTT: ${GW_RTT} мс, потери: ${GW_LOSS}%)" || echo "❌ Недоступен")\n🌍 <b>Интернет (8.8.8.8):</b> $([ "$INT_PING_OK" -eq 1 ] && echo "✅ Доступен (RTT: ${INT_RTT} мс, потери: ${INT_LOSS}%)" || echo "❌ Недоступен")\n🖥 <b>DNS ($DNS_SERVER):</b> $([ "$DNS_OK" -eq 1 ] && echo "✅ Резолвит (${DNS_MS} мс)" || echo "❌ Сбой")\n🛡 <b>Прокси-соединение:</b> $([ "$PROXY_OK" -eq 1 ] && echo "✅ Работает (IP: $PROXY_IP)" || echo "❌ Ошибка")\n━━━━━━━━━━━━━━━━━━━━━━\n💡 <b>Вердикт:</b>\n$REC"
+        
+        send_msg "$DIAG_MSG" "$KEYBOARD"
         ;;
       "🔗 Ресурсы"|"/resources")
         send_msg "🔗 <b>Проверяю доступность веб-ресурсов...</b>"
