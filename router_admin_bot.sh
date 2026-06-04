@@ -1,9 +1,9 @@
 #!/bin/sh
 # router_admin_bot.sh – Secure Telegram admin bot for OpenWrt router
 # ---------------------------------------------------------------
-TOKEN='8294185650:AAHWU5N5OgX-AUmp3roZCDIKeaSV1lsG7w0'
+TOKEN='YOUR_TELEGRAM_BOT_TOKEN'
 # Whitelisted Telegram user/chat IDs (space‑separated)
-ALLOWED_IDS='867086686'
+ALLOWED_IDS='YOUR_TELEGRAM_USER_ID'
 # Use the first allowed ID as the target chat for sending messages
 CHAT_ID=$ALLOWED_IDS
 # File that stores the last processed update offset
@@ -61,12 +61,13 @@ check_url() {
   fi
 }
 
-# Pre‑defined keyboard with 3 rows of diagnostic buttons
-KEYBOARD='{"keyboard":[[{"text":"📊 Статус"},{"text":"⚡ Пинг"},{"text":"📈 Нагрузка"}],[{"text":"📋 Логи"},{"text":"🔎 DNS Тест"},{"text":"🛣 Трассировка"}],[{"text":"🛡 Обход"},{"text":"🔗 Ресурсы"},{"text":"🔍 Диагностика"}],[{"text":"♻️ Перезагрузка"},{"text":"👤 Добавить ID"}]],"one_time_keyboard":false,"resize_keyboard":true}'
+# Pre‑defined keyboard with 4 rows of diagnostic buttons
+KEYBOARD='{"keyboard":[[{"text":"📊 Статус"},{"text":"⚡ Пинг"},{"text":"📈 Нагрузка"}],[{"text":"🔍 Диагностика"},{"text":"👥 Устройства"},{"text":"🎛 MWAN"}],[{"text":"📋 Логи"},{"text":"🔎 DNS Тест"},{"text":"🛡 Обход"}],[{"text":"💾 Бэкап"},{"text":"👤 Добавить ID"},{"text":"♻️ Перезагрузка"}]],"one_time_keyboard":false,"resize_keyboard":true}'
+MWAN_KEYBOARD='{"keyboard":[[{"text":"⚖️ Баланс (50/50)"}],[{"text":"🟢 Только MGTS"},{"text":"🔵 Только Starlink"}],[{"text":"⬅️ Назад"}]],"one_time_keyboard":false,"resize_keyboard":true}'
 
 while true; do
   OFFSET=$(cat "$OFFSET_FILE")
-  RESPONSE=$(curl -s --connect-timeout 10 "https://api.telegram.org/bot${TOKEN}/getUpdates?offset=${OFFSET}&timeout=20")
+  RESPONSE=$(curl -s --connect-timeout 10 --max-time 45 "https://api.telegram.org/bot${TOKEN}/getUpdates?offset=${OFFSET}&timeout=20")
   
   if ! echo "$RESPONSE" | jq -e '.ok' >/dev/null 2>&1; then
     sleep 5
@@ -99,7 +100,7 @@ while true; do
     if [ -f "$STATE_FILE" ]; then
       STATE=$(cat "$STATE_FILE")
       case "$TEXT" in
-        "📊 Статус"|"⚡ Пинг"|"📈 Нагрузка"|"📋 Логи"|"🔎 DNS Тест"|"🛣 Трассировка"|"🛡 Обход"|"🔗 Ресурсы"|"🔍 Диагностика"|"♻️ Перезагрузка"|"👤 Добавить ID"|/start|/reboot|/logs|/status|/ping|/traffic|/dns|/trace|/bypass|/resources|/diagnose)
+        "📊 Статус"|"⚡ Пинг"|"📈 Нагрузка"|"📋 Логи"|"🔎 DNS Тест"|"🛣 Трассировка"|"🛡 Обход"|"🔗 Ресурсы"|"🔍 Диагностика"|"👥 Устройства"|"🎛 MWAN"|"💾 Бэкап"|"♻️ Перезагрузка"|"👤 Добавить ID"|/start|/reboot|/logs|/status|/ping|/traffic|/dns|/trace|/bypass|/resources|/diagnose|/clients|/mwan|/backup)
           # User triggered another command, cancel state silently
           rm -f "$STATE_FILE"
           ;;
@@ -130,6 +131,39 @@ while true; do
             else
               send_msg "❌ Некорректный ID (должен состоять только из цифр). Отменено." "$KEYBOARD"
             fi
+            OFFSET=$((UPDATE_ID+1))
+            echo "$OFFSET" > "$OFFSET_FILE"
+            continue
+          elif [ "$STATE" = "AWAIT_MWAN_POLICY" ]; then
+            case "$TEXT" in
+              "⚖️ Баланс (50/50)")
+                send_msg "⚙️ <b>Применяю политику балансировки MWAN3 (50/50)...</b>"
+                uci set mwan3.default_rule_v4.use_policy='balanced'
+                uci commit mwan3
+                /usr/sbin/mwan3 restart >/dev/null 2>&1
+                send_msg "⚖️ <b>Балансировка успешно включена!</b>\nОба провайдера задействованы 50/50." "$KEYBOARD"
+                ;;
+              "🟢 Только MGTS")
+                send_msg "⚙️ <b>Переключаю весь трафик на MGTS...</b>"
+                uci set mwan3.default_rule_v4.use_policy='wan_only'
+                uci commit mwan3
+                /usr/sbin/mwan3 restart >/dev/null 2>&1
+                send_msg "🟢 <b>Весь трафик перенаправлен на MGTS (eth0).</b>\nStarlink находится в режиме резерва." "$KEYBOARD"
+                ;;
+              "🔵 Только Starlink")
+                send_msg "⚙️ <b>Переключаю весь трафик на Starlink...</b>"
+                uci set mwan3.default_rule_v4.use_policy='wanb_only'
+                uci commit mwan3
+                /usr/sbin/mwan3 restart >/dev/null 2>&1
+                send_msg "🔵 <b>Весь трафик перенаправлен на Starlink (eth1).</b>\nMGTS находится в режиме резерва." "$KEYBOARD"
+                ;;
+              "⬅️ Назад")
+                send_msg "↩️ Возврат в главное меню." "$KEYBOARD"
+                ;;
+              *)
+                send_msg "❌ Неизвестная политика. Возвращаю меню." "$KEYBOARD"
+                ;;
+            esac
             OFFSET=$((UPDATE_ID+1))
             echo "$OFFSET" > "$OFFSET_FILE"
             continue
@@ -188,8 +222,11 @@ while true; do
         CONN_MAX=$(sysctl -n net.netfilter.nf_conntrack_max 2>/dev/null)
         [ -n "$CONN_MAX" ] || CONN_MAX="N/A"
         
-        WAN_IP=$(ubus call network.interface.wan status | jq -r '.["ipv4-address"][0].address' 2>/dev/null)
-        [ -n "$WAN_IP" ] || WAN_IP="N/A"
+        WAN1_IP=$(ubus call network.interface.wan status | jq -r '.["ipv4-address"][0].address' 2>/dev/null)
+        [ -n "$WAN1_IP" ] && [ "$WAN1_IP" != "null" ] || WAN1_IP="N/A"
+        
+        WAN2_IP=$(ubus call network.interface.wanb status | jq -r '.["ipv4-address"][0].address' 2>/dev/null)
+        [ -n "$WAN2_IP" ] && [ "$WAN2_IP" != "null" ] || WAN2_IP="N/A"
         
         EXT_IP=$(curl -s --connect-timeout 3 https://api.ipify.org || echo "Offline")
         
@@ -220,7 +257,7 @@ while true; do
             if [ -n "$PROXY_TEST_IP" ]; then
               PROXY_CONN="✅ Работает (IP: $PROXY_TEST_IP)"
             else
-              PROXY_CONN="❌ Ошибка подключения к прокси"
+              PROXY_CONN="❌ Ошибка подключения"
             fi
           else
             PODKOP_STATUS="⚠️ Включен (Sing-box: остановлен)"
@@ -231,7 +268,7 @@ while true; do
           PROXY_CONN="❌ Отключен"
         fi
         
-        STATUS_MSG="📊 <b>Статус роутера (Rosenberg)</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🏷 <b>Модель:</b> $MODEL\n💿 <b>Система:</b> $OS_VER\n⏱ <b>Uptime:</b> $UPTIME\n📈 <b>CPU Load:</b> $LOAD_AVG\n🧠 <b>ОЗУ:</b> ${MEM_USED} MB / ${MEM_TOTAL} MB (${MEM_PCT}%)\n💾 <b>Flash (/):</b> ${DISK_USED} / ${DISK_SIZE} (${DISK_PCT})\n👥 <b>Сессии NAT:</b> <code>$CONN_COUNT / $CONN_MAX</code>\n🌐 <b>WAN IP:</b> $WAN_IP\n🌍 <b>Внешний IP:</b> $EXT_IP\n━━━━━━━━━━━━━━━━━━━━━━\n🥷 <b>Zapret:</b> $ZAPRET_STATUS\n🕵️ <b>Podkop:</b> $PODKOP_STATUS\n📡 <b>Сервер:</b> <code>$PODKOP_SERVER</code> ($PODKOP_IP)\n🔌 <b>Соединение прокси:</b> $PROXY_CONN\n━━━━━━━━━━━━━━━━━━━━━━"
+        STATUS_MSG="📊 <b>Статус роутера (Rosenberg)</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🏷 <b>Модель:</b> $MODEL\n💿 <b>Система:</b> $OS_VER\n⏱ <b>Uptime:</b> $UPTIME\n📈 <b>CPU Load:</b> $LOAD_AVG\n🧠 <b>ОЗУ:</b> ${MEM_USED} MB / ${MEM_TOTAL} MB (${MEM_PCT}%)\n💾 <b>Flash (/):</b> ${DISK_USED} / ${DISK_SIZE} (${DISK_PCT})\n👥 <b>Сессии NAT:</b> <code>$CONN_COUNT / $CONN_MAX</code>\n\n🌐 <b>Сеть (Multi-WAN)</b>\n├── 📶 <b>WAN (MGTS):</b> <code>$WAN1_IP</code> (eth0)\n├── 📶 <b>WANB (Starlink):</b> <code>$WAN2_IP</code> (eth1)\n└── 🌍 <b>Внешний IP:</b> <code>$EXT_IP</code>\n\n🥷 <b>Сервисы и Обход</b>\n├── 🥷 <b>Zapret:</b> $ZAPRET_STATUS\n├── 🕵️ <b>Podkop:</b> $PODKOP_STATUS\n├── 📡 <b>Сервер:</b> <code>$PODKOP_SERVER</code> ($PODKOP_IP)\n└── 🔌 <b>Прокси-соединение:</b> $PROXY_CONN\n━━━━━━━━━━━━━━━━━━━━━━"
         send_msg "$STATUS_MSG" "$KEYBOARD"
         ;;
       "/ping"|"⚡ Пинг")
@@ -242,39 +279,52 @@ while true; do
           MIN=$(echo "$RTT" | cut -d'/' -f1)
           AVG=$(echo "$RTT" | cut -d'/' -f2)
           MAX=$(echo "$RTT" | cut -d'/' -f3)
-          send_msg "⚡ <b>Результаты пинга (8.8.8.8)</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🟢 <b>Статус:</b> Доступен\n📦 <b>Пакеты:</b> <code>3/3 получено</code>\n⏱ <b>Задержка:</b> <code>$AVG мс</code> (микро: <code>$MIN</code> / макс: <code>$MAX</code>)\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
+          send_msg "⚡ <b>Результаты пинга (8.8.8.8)</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🟢 <b>Статус:</b> Доступен\n📦 <b>Пакеты:</b> <code>3/3 получено</code>\n⏱ <b>Задержка:</b> <code>$AVG мс</code> (мин: <code>$MIN</code> / макс: <code>$MAX</code>)\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
         else
           PING_ESCAPED=$(echo "$PING_OUT" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
           send_msg "⚠️ <b>Проблема со связью!</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🔴 <b>Пинг не прошел:</b>\n<pre>$PING_ESCAPED</pre>\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
         fi
         ;;
       "📈 Нагрузка"|"/traffic")
-        send_msg "📈 <b>Замеряю скорость на WAN интерфейсе (2 сек)...</b>"
+        send_msg "📈 <b>Замеряю скорость на WAN интерфейсах (2 сек)...</b>"
         WAN_IFACE=$(ubus call network.interface.wan status | jq -r '.l3_device' 2>/dev/null)
         [ -n "$WAN_IFACE" ] || WAN_IFACE="eth0"
+        WANB_IFACE=$(ubus call network.interface.wanb status | jq -r '.l3_device' 2>/dev/null)
+        [ -n "$WANB_IFACE" ] || WANB_IFACE="eth1"
         
-        RX_1=$(cat /sys/class/net/$WAN_IFACE/statistics/rx_bytes)
-        TX_1=$(cat /sys/class/net/$WAN_IFACE/statistics/tx_bytes)
+        RX_WAN1=$(cat /sys/class/net/$WAN_IFACE/statistics/rx_bytes)
+        TX_WAN1=$(cat /sys/class/net/$WAN_IFACE/statistics/tx_bytes)
+        RX_WANB1=$(cat /sys/class/net/$WANB_IFACE/statistics/rx_bytes)
+        TX_WANB1=$(cat /sys/class/net/$WANB_IFACE/statistics/tx_bytes)
+        
         sleep 2
-        RX_2=$(cat /sys/class/net/$WAN_IFACE/statistics/rx_bytes)
-        TX_2=$(cat /sys/class/net/$WAN_IFACE/statistics/tx_bytes)
         
-        RX_SPEED_BPS=$(( (RX_2 - RX_1) * 8 / 2 ))
-        TX_SPEED_BPS=$(( (TX_2 - TX_1) * 8 / 2 ))
+        RX_WAN2=$(cat /sys/class/net/$WAN_IFACE/statistics/rx_bytes)
+        TX_WAN2=$(cat /sys/class/net/$WAN_IFACE/statistics/tx_bytes)
+        RX_WANB2=$(cat /sys/class/net/$WANB_IFACE/statistics/rx_bytes)
+        TX_WANB2=$(cat /sys/class/net/$WANB_IFACE/statistics/tx_bytes)
         
-        if [ "$RX_SPEED_BPS" -ge 1048576 ]; then
-          RX_SPEED="$(( RX_SPEED_BPS / 1048576 )).$(( (RX_SPEED_BPS % 1048576) * 100 / 1048576 )) Mbps"
-        else
-          RX_SPEED="$(( RX_SPEED_BPS / 1024 )) Kbps"
-        fi
+        RX_S1=$(( (RX_WAN2 - RX_WAN1) * 8 / 2 ))
+        TX_S1=$(( (TX_WAN2 - TX_WAN1) * 8 / 2 ))
+        RX_S2=$(( (RX_WANB2 - RX_WANB1) * 8 / 2 ))
+        TX_S2=$(( (TX_WANB2 - TX_WANB1) * 8 / 2 ))
         
-        if [ "$TX_SPEED_BPS" -ge 1048576 ]; then
-          TX_SPEED="$(( TX_SPEED_BPS / 1048576 )).$(( (TX_SPEED_BPS % 1048576) * 100 / 1048576 )) Mbps"
-        else
-          TX_SPEED="$(( TX_SPEED_BPS / 1024 )) Kbps"
-        fi
+        format_speed() {
+          local bps="$1"
+          if [ "$bps" -ge 1048576 ]; then
+            echo "$(( bps / 1048576 )).$(( (bps % 1048576) * 100 / 1048576 )) Mbps"
+          else
+            echo "$(( bps / 1024 )) Kbps"
+          fi
+        }
         
-        send_msg "📈 <b>Нагрузка WAN ($WAN_IFACE)</b>\n━━━━━━━━━━━━━━━━━━━━━━\n📥 <b>Входящий трафик:</b> <code>$RX_SPEED</code>\n📤 <b>Исходящий трафик:</b> <code>$TX_SPEED</code>\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
+        WAN_RX=$(format_speed "$RX_S1")
+        WAN_TX=$(format_speed "$TX_S1")
+        WANB_RX=$(format_speed "$RX_S2")
+        WANB_TX=$(format_speed "$TX_S2")
+        
+        TRAFFIC_MSG="📈 <b>Нагрузка на интерфейсах (mwan3)</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🌐 <b>WAN (MGTS - $WAN_IFACE):</b>\n├── 📥 <b>Входящий:</b> <code>$WAN_RX</code>\n└── 📤 <b>Исходящий:</b> <code>$WAN_TX</code>\n\n🌐 <b>WANB (Starlink - $WANB_IFACE):</b>\n├── 📥 <b>Входящий:</b> <code>$WANB_RX</code>\n└── 📤 <b>Исходящий:</b> <code>$WANB_TX</code>\n━━━━━━━━━━━━━━━━━━━━━━"
+        send_msg "$TRAFFIC_MSG" "$KEYBOARD"
         ;;
       "🔎 DNS Тест"|"/dns")
         send_msg "🔎 <b>Выполняю диагностику DNS...</b>"
@@ -316,83 +366,109 @@ while true; do
         fi
         
         # 2. Link Flapping check
-        LINK_FLAPS=$(logread | grep -E "eth0|link down|link up" | grep -E -c "link down|link up|down|up")
+        LINK_FLAPS=$(logread | grep -E "eth0|eth1|link down|link up" | grep -E -c "link down|link up|down|up")
         [ -n "$LINK_FLAPS" ] || LINK_FLAPS=0
         
-        # 3. Physical Link Check (eth0 carrier)
-        CARRIER_STATE=$(cat /sys/class/net/eth0/carrier 2>/dev/null)
-        if [ "$CARRIER_STATE" = "1" ]; then
-          PHYS_LINK="✅ Физический линк: ОК (eth0 up)"
-          LINK_UP=1
-        else
-          PHYS_LINK="❌ Физический линк: Отсутствует (eth0 down)"
-          LINK_UP=0
+        # --- WAN 1 (MGTS - eth0) ---
+        W1_PHYS=0
+        if [ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = "1" ]; then
+          W1_PHYS=1
         fi
         
-        # 4. DHCP WAN IP check
-        WAN_STATUS=$(ubus call network.interface.wan status 2>/dev/null)
-        WAN_IP=$(echo "$WAN_STATUS" | jq -r '.["ipv4-address"][0].address' 2>/dev/null)
-        if [ -n "$WAN_IP" ] && [ "$WAN_IP" != "null" ]; then
-          WAN_IP_STATE="✅ WAN IP получен: <code>$WAN_IP</code>"
-          HAS_WAN_IP=1
-        else
-          WAN_IP_STATE="❌ WAN IP: Не получен"
-          HAS_WAN_IP=0
-        fi
+        W1_STATUS=$(ubus call network.interface.wan status 2>/dev/null)
+        W1_IP=$(echo "$W1_STATUS" | jq -r '.["ipv4-address"][0].address' 2>/dev/null)
+        [ -n "$W1_IP" ] && [ "$W1_IP" != "null" ] || W1_IP=""
         
-        # 5. Local Gateway Ping Check
-        GATEWAY=$(echo "$WAN_STATUS" | jq -r '.["route"][0].nexthop' 2>/dev/null)
-        [ -n "$GATEWAY" ] && [ "$GATEWAY" != "null" ] || GATEWAY=$(ip route | grep default | awk '{print $3}' | head -n 1)
-        [ -n "$GATEWAY" ] || GATEWAY="192.168.1.254"
+        W1_GW=$(echo "$W1_STATUS" | jq -r '.["route"][0].nexthop' 2>/dev/null)
+        [ -n "$W1_GW" ] && [ "$W1_GW" != "null" ] || W1_GW=""
         
-        GW_PING_OK=0
-        GW_LOSS=100
-        GW_RTT="N/A"
-        if [ "$LINK_UP" -eq 1 ]; then
-          GW_PING_OUT=$(ping -c 5 -W 2 "$GATEWAY" 2>&1)
-          if echo "$GW_PING_OUT" | grep -q -E "packets received|received"; then
-            GW_REC=$(echo "$GW_PING_OUT" | grep -E "packets transmitted|received" | awk -F', ' '{print $2}' | awk '{print $1}')
-            GW_LOSS=$(( 100 - (GW_REC * 20) ))
-            if [ "$GW_REC" -gt 0 ]; then
-              GW_PING_OK=1
-              GW_RTT=$(echo "$GW_PING_OUT" | tail -n 1 | awk '{print $4}' | cut -d'/' -f2)
+        W1_GW_PING=0
+        W1_GW_LOSS=100
+        W1_GW_RTT="N/A"
+        if [ -n "$W1_GW" ] && [ "$W1_PHYS" -eq 1 ]; then
+          PING_OUT=$(ping -I eth0 -c 3 -W 2 "$W1_GW" 2>&1)
+          if echo "$PING_OUT" | grep -q -E "packets received|received"; then
+            REC=$(echo "$PING_OUT" | grep -E "packets transmitted|received" | awk -F', ' '{print $2}' | awk '{print $1}')
+            W1_GW_LOSS=$(( 100 - (REC * 100 / 3) ))
+            if [ "$REC" -gt 0 ]; then
+              W1_GW_PING=1
+              W1_GW_RTT=$(echo "$PING_OUT" | tail -n 1 | awk '{print $4}' | cut -d'/' -f2)
             fi
           fi
         fi
         
-        # 6. Internet Routing Ping Check (8.8.8.8)
-        INT_PING_OK=0
-        INT_LOSS=100
-        INT_RTT="N/A"
-        if [ "$GW_PING_OK" -eq 1 ]; then
-          INT_PING_OUT=$(ping -c 5 -W 2 8.8.8.8 2>&1)
-          if echo "$INT_PING_OUT" | grep -q -E "packets received|received"; then
-            INT_REC=$(echo "$INT_PING_OUT" | grep -E "packets transmitted|received" | awk -F', ' '{print $2}' | awk '{print $1}')
-            INT_LOSS=$(( 100 - (INT_REC * 20) ))
-            if [ "$INT_REC" -gt 0 ]; then
-              INT_PING_OK=1
-              INT_RTT=$(echo "$INT_PING_OUT" | tail -n 1 | awk '{print $4}' | cut -d'/' -f2)
+        W1_INT_PING=0
+        W1_INT_LOSS=100
+        W1_INT_RTT="N/A"
+        if [ "$W1_GW_PING" -eq 1 ]; then
+          PING_OUT=$(ping -I eth0 -c 3 -W 2 8.8.8.8 2>&1)
+          if echo "$PING_OUT" | grep -q -E "packets received|received"; then
+            REC=$(echo "$PING_OUT" | grep -E "packets transmitted|received" | awk -F', ' '{print $2}' | awk '{print $1}')
+            W1_INT_LOSS=$(( 100 - (REC * 100 / 3) ))
+            if [ "$REC" -gt 0 ]; then
+              W1_INT_PING=1
+              W1_INT_RTT=$(echo "$PING_OUT" | tail -n 1 | awk '{print $4}' | cut -d'/' -f2)
             fi
           fi
         fi
         
-        # 7. DNS Check
+        # --- WAN 2 (Starlink - eth1) ---
+        W2_PHYS=0
+        if [ "$(cat /sys/class/net/eth1/carrier 2>/dev/null)" = "1" ]; then
+          W2_PHYS=1
+        fi
+        
+        W2_STATUS=$(ubus call network.interface.wanb status 2>/dev/null)
+        W2_IP=$(echo "$W2_STATUS" | jq -r '.["ipv4-address"][0].address' 2>/dev/null)
+        [ -n "$W2_IP" ] && [ "$W2_IP" != "null" ] || W2_IP=""
+        
+        W2_GW=$(echo "$W2_STATUS" | jq -r '.["route"][0].nexthop' 2>/dev/null)
+        [ -n "$W2_GW" ] && [ "$W2_GW" != "null" ] || W2_GW=""
+        
+        W2_GW_PING=0
+        W2_GW_LOSS=100
+        W2_GW_RTT="N/A"
+        if [ -n "$W2_GW" ] && [ "$W2_PHYS" -eq 1 ]; then
+          PING_OUT=$(ping -I eth1 -c 3 -W 2 "$W2_GW" 2>&1)
+          if echo "$PING_OUT" | grep -q -E "packets received|received"; then
+            REC=$(echo "$PING_OUT" | grep -E "packets transmitted|received" | awk -F', ' '{print $2}' | awk '{print $1}')
+            W2_GW_LOSS=$(( 100 - (REC * 100 / 3) ))
+            if [ "$REC" -gt 0 ]; then
+              W2_GW_PING=1
+              W2_GW_RTT=$(echo "$PING_OUT" | tail -n 1 | awk '{print $4}' | cut -d'/' -f2)
+            fi
+          fi
+        fi
+        
+        W2_INT_PING=0
+        W2_INT_LOSS=100
+        W2_INT_RTT="N/A"
+        if [ "$W2_GW_PING" -eq 1 ]; then
+          PING_OUT=$(ping -I eth1 -c 3 -W 2 8.8.8.8 2>&1)
+          if echo "$PING_OUT" | grep -q -E "packets received|received"; then
+            REC=$(echo "$PING_OUT" | grep -E "packets transmitted|received" | awk -F', ' '{print $2}' | awk '{print $1}')
+            W2_INT_LOSS=$(( 100 - (REC * 100 / 3) ))
+            if [ "$REC" -gt 0 ]; then
+              W2_INT_PING=1
+              W2_INT_RTT=$(echo "$PING_OUT" | tail -n 1 | awk '{print $4}' | cut -d'/' -f2)
+            fi
+          fi
+        fi
+        
+        # --- DNS & Proxy Checks ---
         DNS_OK=0
         DNS_MS="N/A"
         DNS_SERVER=$(nslookup google.com 2>/dev/null | grep "Server:" | awk '{print $2}')
         [ -n "$DNS_SERVER" ] || DNS_SERVER="System Default"
         
-        if [ "$INT_PING_OK" -eq 1 ]; then
-          START_TIME=$(date +%s%3N)
-          NS_OUT=$(nslookup google.com 2>/dev/null)
-          END_TIME=$(date +%s%3N)
-          if echo "$NS_OUT" | grep -q "Address"; then
-            DNS_OK=1
-            DNS_MS=$(( END_TIME - START_TIME ))
-          fi
+        START_TIME=$(date +%s%3N)
+        NS_OUT=$(nslookup google.com 2>/dev/null)
+        END_TIME=$(date +%s%3N)
+        if echo "$NS_OUT" | grep -q "Address"; then
+          DNS_OK=1
+          DNS_MS=$(( END_TIME - START_TIME ))
         fi
         
-        # 8. Proxy / VPN Check (SOCKS connection)
         PROXY_OK=0
         PROXY_IP="N/A"
         if [ "$(/etc/init.d/zapret status 2>&1)" = "running" ] || [ "$(/etc/init.d/sing-box status 2>/dev/null || ubus call service list | grep -q sing-box)" = "running" ] || [ -f /var/run/sing-box.pid ]; then
@@ -403,35 +479,77 @@ while true; do
           fi
         fi
         
-        # 9. Build Recommendation
+        # --- Build helper function for output styling ---
+        format_wan_status() {
+          local phys="$1" ip="$2" gw="$3" gw_ping="$4" gw_rtt="$5" int_ping="$6" int_rtt="$7" int_loss="$8"
+          local out=""
+          if [ "$phys" -eq 1 ]; then
+            out="${out}├── 🔗 Линк WAN: ✅ ОК\n"
+          else
+            out="${out}├── 🔗 Линк WAN: ❌ Down\n"
+          fi
+          
+          if [ -n "$ip" ]; then
+            out="${out}├── 🌐 WAN IP: ✅ Получен (<code>$ip</code>)\n"
+          else
+            out="${out}├── 🌐 WAN IP: ❌ Не получен\n"
+          fi
+          
+          if [ -n "$gw" ]; then
+            if [ "$gw_ping" -eq 1 ]; then
+              out="${out}├── 🚪 Шлюз ($gw): ✅ Доступен (<code>$gw_rtt мс</code>)\n"
+            else
+              out="${out}├── 🚪 Шлюз ($gw): ❌ Недоступен\n"
+            fi
+          else
+            out="${out}├── 🚪 Шлюз: ❌ Маршрут отсутствует\n"
+          fi
+          
+          if [ "$int_ping" -eq 1 ]; then
+            out="${out}└── 🌍 Интернет (8.8.8.8): ✅ Доступен (<code>$int_rtt мс</code>, потери <code>$int_loss%</code>)"
+          else
+            out="${out}└── 🌍 Интернет (8.8.8.8): ❌ Недоступен"
+          fi
+          echo "$out"
+        }
+        
+        WAN_TXT=$(format_wan_status "$W1_PHYS" "$W1_IP" "$W1_GW" "$W1_GW_PING" "$W1_GW_RTT" "$W1_INT_PING" "$W1_INT_RTT" "$W1_INT_LOSS")
+        WANB_TXT=$(format_wan_status "$W2_PHYS" "$W2_IP" "$W2_GW" "$W2_GW_PING" "$W2_GW_RTT" "$W2_INT_PING" "$W2_INT_RTT" "$W2_INT_LOSS")
+        
+        # --- Build Recommendation & Verdicts ---
         REC=""
-        if [ "$LINK_UP" -eq 0 ]; then
-          REC="❌ <b>Критическая ошибка:</b> Физический кабель провайдера не подключен или поврежден. Проверьте WAN-порт роутера."
-        elif [ "$HAS_WAN_IP" -eq 0 ]; then
-          REC="❌ <b>Ошибка:</b> Физическое соединение с провайдером есть, но IP-адрес не получен. Возможно, порт заблокирован за неуплату или проводятся тех. работы."
-        elif [ "$GW_PING_OK" -eq 0 ]; then
-          REC="❌ <b>Ошибка:</b> Локальный шлюз провайдера (<code>$GATEWAY</code>) не отвечает на пинги. Проблема на оборудовании провайдера в подъезде/доме."
-        elif [ "$INT_PING_OK" -eq 0 ]; then
-          REC="❌ <b>Ошибка:</b> Локальная сеть работает, но нет выхода в глобальный интернет. Возможна авария на стороне провайдера."
-        elif [ "$INT_LOSS" -gt 20 ]; then
-          REC="⚠️ <b>Предупреждение:</b> Интернет работает нестабильно, обнаружено <b>$INT_LOSS% потерь пакетов</b>. Возможен плохой контакт кабеля."
-        elif [ "$DNS_OK" -eq 0 ]; then
-          REC="❌ <b>Ошибка DNS:</b> Интернет доступен по IP, но имена не резолвятся. Проверьте DNS-серверы (текущий: <code>$DNS_SERVER</code>)."
-        elif [ "$PROXY_OK" -eq 0 ]; then
-          REC="⚠️ <b>Предупреждение:</b> Обычный интернет доступен, но заблокированные ресурсы не откроются. VPN-туннель (Sing-box) не активен."
+        if [ "$W1_PHYS" -eq 0 ] && [ "$W2_PHYS" -eq 0 ]; then
+          REC="❌ <b>Авария:</b> Физические линки на обоих провайдерах отсутствуют! Проверьте кабели."
+        elif [ "$W1_INT_PING" -eq 0 ] && [ "$W2_INT_PING" -eq 0 ]; then
+          REC="❌ <b>Авария:</b> На обоих провайдерах нет доступа к интернету! Проверьте настройки или обратитесь в поддержку."
         else
-          REC="✅ <b>Диагностика успешна:</b> Все системы работают штатно. Соединение стабильное, DNS работает, прокси-туннель активен."
+          if [ "$W1_INT_PING" -eq 1 ] && [ "$W2_INT_PING" -eq 1 ]; then
+            if [ "$PROXY_OK" -eq 1 ]; then
+              REC="✅ <b>Диагностика успешна:</b> Все системы работают штатно. Оба WAN-канала активны, балансировка mwan3 работает, прокси-тунлель стабилен."
+            else
+              REC="⚠️ <b>Предупреждение:</b> Интернет доступен по обоим WAN, но VPN-туннель обхода блокировок не отвечает."
+            fi
+          else
+            if [ "$W1_INT_PING" -eq 0 ]; then
+              REC="⚠️ <b>Режим резерва:</b> Основной канал WAN (MGTS) недоступен. Трафик перенаправлен на WANB (Starlink)."
+            else
+              REC="⚠️ <b>Режим резерва:</b> Резервный канал WANB (Starlink) недоступен. Трафик идет через WAN (MGTS)."
+            fi
+            if [ "$PROXY_OK" -eq 0 ]; then
+              REC="${REC}\n⚠️ Также не работает прокси-туннель обхода."
+            fi
+          fi
         fi
         
         if [ "$CPU_TEMP" != "N/A" ] && [ "$CPU_TEMP" -gt 75 ]; then
-          REC="${REC}\n⚠️ <b>Предупреждение о перегреве:</b> Процессор роутера нагрелся до <b>${CPU_TEMP}°C</b>! Обеспечьте вентиляцию."
+          REC="${REC}\n⚠️ <b>Предупреждение о температуре:</b> Процессор нагрелся до <b>${CPU_TEMP}°C</b>!"
         fi
         
-        if [ "$LINK_FLAPS" -gt 0 ]; then
-          REC="${REC}\n⚠️ <b>Предупреждение о линке:</b> Зафиксировано <b>$LINK_FLAPS</b> изменений статуса линка WAN. Возможны проблемы с кабелем."
+        if [ "$LINK_FLAPS" -gt 5 ]; then
+          REC="${REC}\n⚠️ <b>Обнаружен линк-флап:</b> Зафиксировано <b>$LINK_FLAPS</b> изменений линка WAN за сессию."
         fi
         
-        DIAG_MSG="🔍 <b>Результаты диагностики сети (Rosenberg)</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🌡 <b>CPU Temp:</b> <code>${CPU_TEMP}°C</code> (линк-флап: <code>${LINK_FLAPS}</code>)\n🔗 <b>Линк WAN:</b> $([ "$LINK_UP" -eq 1 ] && echo "✅ ОК" || echo "❌ Down")\n🌐 <b>WAN IP:</b> $([ "$HAS_WAN_IP" -eq 1 ] && echo "✅ Получен (<code>$WAN_IP</code>)" || echo "❌ Нет")\n🚪 <b>Шлюз (<code>$GATEWAY</code>):</b> $([ "$GW_PING_OK" -eq 1 ] && echo "✅ Доступен (RTT: <code>${GW_RTT} мс</code>, потери: <code>${GW_LOSS}%</code>)" || echo "❌ Недоступен")\n🌍 <b>Интернет (8.8.8.8):</b> $([ "$INT_PING_OK" -eq 1 ] && echo "✅ Доступен (RTT: <code>${INT_RTT} мс</code>, потери: <code>${INT_LOSS}%</code>)" || echo "❌ Недоступен")\n🖥 <b>DNS (<code>$DNS_SERVER</code>):</b> $([ "$DNS_OK" -eq 1 ] && echo "✅ Резолвит (<code>${DNS_MS} мс</code>)" || echo "❌ Сбой")\n🛡 <b>Прокси-соединение:</b> $([ "$PROXY_OK" -eq 1 ] && echo "✅ Работает (IP: <code>$PROXY_IP</code>)" || echo "❌ Ошибка")\n━━━━━━━━━━━━━━━━━━━━━━\n💡 <b>Вердикт:</b>\n$REC"
+        DIAG_MSG="🔍 <b>Результаты диагностики сети (Rosenberg)</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🌡 <b>CPU Temp:</b> <code>${CPU_TEMP}°C</code> (линк-флап: <code>${LINK_FLAPS}</code>)\n\n🌐 <b>WAN 1: MGTS (eth0)</b>\n${WAN_TXT}\n\n🌐 <b>WAN 2: Starlink (eth1)</b>\n${WANB_TXT}\n\n⚙️ <b>Сервисы и Обход</b>\n├── 🖥 DNS (<code>$DNS_SERVER</code>): $([ "$DNS_OK" -eq 1 ] && echo "✅ Резолвит (<code>${DNS_MS} мс</code>)" || echo "❌ Сбой")\n└── 🛡 Прокси (SOCKS5): $([ "$PROXY_OK" -eq 1 ] && echo "✅ Работает (IP: <code>$PROXY_IP</code>)" || echo "❌ Ошибка")\n━━━━━━━━━━━━━━━━━━━━━━\n💡 <b>Вердикт:</b>\n$REC"
         
         send_msg "$DIAG_MSG" "$KEYBOARD"
         ;;
@@ -449,6 +567,41 @@ while true; do
         echo "AWAIT_ADD_USER_ID" > "/tmp/bot_state_${FROM_ID}"
         send_msg "👤 <b>Введите Telegram ID нового пользователя:</b>\n(Только цифры, например: <code>987654321</code>)"
         ;;
+      "👥 Устройства"|"/clients")
+        send_msg "👥 <b>Запрашиваю список активных устройств...</b>"
+        LEASES_OUT=""
+        if [ -f /var/dhcp.leases ]; then
+          while read -r lease; do
+            mac=$(echo "$lease" | awk '{print $2}')
+            ip=$(echo "$lease" | awk '{print $3}')
+            host=$(echo "$lease" | awk '{print $4}')
+            [ "$host" = "*" ] && host="Unknown Device"
+            LEASES_OUT="${LEASES_OUT}├── 📱 <b>$host</b>\n│   └── IP: <code>$ip</code> | MAC: <code>$mac</code>\n"
+          done < /var/dhcp.leases
+        fi
+        if [ -n "$LEASES_OUT" ]; then
+          LEASES_OUT=$(echo -e "$LEASES_OUT" | sed '$ s/├──/└──/; $ s/│  /   /')
+        else
+          LEASES_OUT="❌ Активных арендованных адресов (DHCP leases) не найдено."
+        fi
+        
+        send_msg "👥 <b>Список устройств (DHCP Leases):</b>\n━━━━━━━━━━━━━━━━━━━━━━\n$LEASES_OUT\n━━━━━━━━━━━━━━━━━━━━━━" "$KEYBOARD"
+        ;;
+      "🎛 MWAN"|"/mwan")
+        echo "AWAIT_MWAN_POLICY" > "/tmp/bot_state_${FROM_ID}"
+        CUR_POL=$(uci get mwan3.default_rule_v4.use_policy 2>/dev/null || echo "N/A")
+        send_msg "🎛 <b>Настройка политики Multi-WAN</b>\n━━━━━━━━━━━━━━━━━━━━━━\n⚙️ <b>Текущий режим:</b> <code>$CUR_POL</code>\n\nВыберите желаемую конфигурацию кнопками ниже:\n━━━━━━━━━━━━━━━━━━━━━━" "$MWAN_KEYBOARD"
+        ;;
+      "💾 Бэкап"|"/backup")
+        send_msg "💾 <b>Создаю резервную копию конфигурации...</b>"
+        BACKUP_FILE="/tmp/openwrt_backup_$(date '+%Y%m%d_%H%M%S').tar.gz"
+        if sysupgrade --create-backup "$BACKUP_FILE" >/dev/null 2>&1; then
+          send_doc "$BACKUP_FILE" "💾 Резервная копия конфигурации роутера (Rosenberg)"
+          rm -f "$BACKUP_FILE"
+        else
+          send_msg "❌ Не удалось создать бэкап." "$KEYBOARD"
+        fi
+        ;;
       *)
         send_msg "🤖 Неизвестная команда. Используйте меню кнопок." "$KEYBOARD"
         ;;
@@ -459,3 +612,4 @@ while true; do
   done
   sleep 5
 done
+
