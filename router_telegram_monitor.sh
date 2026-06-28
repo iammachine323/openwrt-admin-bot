@@ -22,9 +22,12 @@ log_msg() {
   local msg="$1"
   local ts="$(date '+%Y-%m-%d %H:%M:%S')"
   echo "$ts $msg" >> "$LOG_FILE"
-  # Rotate if needed
-  if [ -f "$LOG_FILE" ] && [ $(stat -f %z "$LOG_FILE") -ge $MAX_LOG_SIZE ]; then
-    mv "$LOG_FILE" "${LOG_FILE}.$(date '+%Y%m%d%H%M%S').old"
+  # Rotate if needed (using robust 'wc -c' to support busybox/posix syntax safely)
+  if [ -f "$LOG_FILE" ]; then
+    local size=$(wc -c "$LOG_FILE" | awk '{print $1}')
+    if [ "$size" -ge $MAX_LOG_SIZE ]; then
+      mv "$LOG_FILE" "${LOG_FILE}.$(date '+%Y%m%d%H%M%S').old"
+    fi
   fi
   logger -t router_monitor "$msg"
 }
@@ -55,6 +58,7 @@ send_msg() {
   
   for chat in $target_chats; do
     curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+      --connect-timeout 5 --max-time 15 \
       -d chat_id="$chat" \
       -d parse_mode="HTML" \
       --data-urlencode "text=${text}" > /dev/null
@@ -63,30 +67,38 @@ send_msg() {
 }
 
 # ---------- DoH health check ----------
-check_doh() {
-  local url="$1"
-  local code=$(curl -s -o /dev/null -w "%{http_code}" "$url")
-  [ "$code" -eq 200 ]
-}
-
-# Set DNS fallback to DoH proxies (Cloudflare 5053, Google 5054, OpenDNS 443)
-set_dns_fallback() {
-  # Desired upstream list
-  local upstreams="127.0.0.1#5053,127.0.0.1#5054,127.0.0.1#443"
-  # Check DoH health before applying
-  local healthy=true
-  for port in 5053 5054 443; do
-    if ! check_doh "https://127.0.0.1:${port}/dns-query?name=example.com"; then
-      log_msg "DoH endpoint 127.0.0.1:${port} is unreachable"
-      healthy=false
-    else
-      log_msg "DoH endpoint 127.0.0.1:${port} is healthy"
-    fi
-  done
-  if [ "$healthy" = false ]; then
-    log_msg "Skipping DNS switch because one or more DoH endpoints are unhealthy"
+# Fixed: check DoH ports using native DNS queries via nslookup instead of curl HTTP requests
+check_doh_dns() {
+  local port="$1"
+  # Query google.com through loopback at specific port. Expect IP in answer.
+  local ns_out
+  ns_out=$(nslookup google.com 127.0.0.1 -port="$port" 2>/dev/null)
+  if echo "$ns_out" | grep -q "Address"; then
     return 0
   fi
+  return 1
+}
+
+# Set DNS fallback to DoH proxies (Cloudflare 5053, Google 5054)
+set_dns_fallback() {
+  # Desired upstream list
+  local upstreams="127.0.0.1#5053,127.0.0.1#5054"
+  # Check DoH health before applying
+  local healthy=true
+  for port in 5053 5054; do
+    if ! check_doh_dns "$port"; then
+      log_msg "DoH DNS proxy on port $port is unhealthy or unresponsive"
+      healthy=false
+    else
+      log_msg "DoH DNS proxy on port $port is healthy"
+    fi
+  done
+  
+  if [ "$healthy" = false ]; then
+    log_msg "Skipping DNS fallback switch because one or more DoH proxy ports are unresponsive"
+    return 0
+  fi
+  
   # Update podkop DNS setting if needed
   local current=$(uci get podkop.settings.dns_upstream 2>/dev/null || echo '')
   if [ "$current" != "$upstreams" ]; then
@@ -95,16 +107,15 @@ set_dns_fallback() {
     /etc/init.d/podkop restart >/dev/null 2>&1
     log_msg "Podkop DNS upstream switched to DoH: $upstreams"
     # Also adjust dnsmasq upstream servers
-    uci set dhcp.@dnsmasq[0].server='127.0.0.1#5053,127.0.0.1#5054,127.0.0.1#443'
+    uci set dhcp.@dnsmasq[0].server='127.0.0.1#5053,127.0.0.1#5054'
     uci commit dhcp
     /etc/init.d/dnsmasq restart >/dev/null 2>&1
     log_msg "dnsmasq restarted with DoH upstreams"
-    send_msg "✅ <b>DNS переключён на DoH‑fallback (Cloudflare, Google, OpenDNS)</b>"
+    send_msg "✅ <b>DNS переключён на DoH‑fallback (Cloudflare, Google)</b>"
   fi
 }
 
 # ---------- WAN Interfaces Monitoring (mwan3) ----------
-# Adjusted to handle both mwan3 status or native system interfaces when mwan3 is disabled
 check_interface_state() {
   local iface="$1"
   local displayName="$2"
