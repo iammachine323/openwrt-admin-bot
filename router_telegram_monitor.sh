@@ -67,25 +67,21 @@ send_msg() {
 }
 
 # ---------- DoH health check ----------
-# Fixed: check DoH ports using native DNS queries via nslookup instead of curl HTTP requests
+# Fixed: check DoH ports using native DNS queries via dig instead of nslookup (due to busybox syntax limitations)
 check_doh_dns() {
   local port="$1"
-  # Query google.com through loopback at specific port. Expect IP in answer.
-  local ns_out
-  ns_out=$(nslookup google.com 127.0.0.1 -port="$port" 2>/dev/null)
-  if echo "$ns_out" | grep -q "Address"; then
-    return 0
-  fi
-  return 1
+  # Query google.com through loopback at specific port using dig. Expect exit code 0.
+  dig +short google.com @127.0.0.1 -p "$port" >/dev/null 2>&1
+  return $?
 }
 
-# Set DNS fallback to DoH proxies (Cloudflare 5053, Google 5054)
+# Set DNS fallback to DoH proxies (Cloudflare 5053)
 set_dns_fallback() {
   # Desired upstream list
-  local upstreams="127.0.0.1#5053,127.0.0.1#5054"
+  local upstreams="127.0.0.1#5053"
   # Check DoH health before applying
   local healthy=true
-  for port in 5053 5054; do
+  for port in 5053; do
     if ! check_doh_dns "$port"; then
       log_msg "DoH DNS proxy on port $port is unhealthy or unresponsive"
       healthy=false
@@ -95,7 +91,7 @@ set_dns_fallback() {
   done
   
   if [ "$healthy" = false ]; then
-    log_msg "Skipping DNS fallback switch because one or more DoH proxy ports are unresponsive"
+    log_msg "Skipping DNS fallback switch because DoH proxy port 5053 is unresponsive"
     return 0
   fi
   
@@ -107,11 +103,11 @@ set_dns_fallback() {
     /etc/init.d/podkop restart >/dev/null 2>&1
     log_msg "Podkop DNS upstream switched to DoH: $upstreams"
     # Also adjust dnsmasq upstream servers
-    uci set dhcp.@dnsmasq[0].server='127.0.0.1#5053,127.0.0.1#5054'
+    uci set dhcp.@dnsmasq[0].server='127.0.0.1#5053'
     uci commit dhcp
     /etc/init.d/dnsmasq restart >/dev/null 2>&1
     log_msg "dnsmasq restarted with DoH upstreams"
-    send_msg "✅ <b>DNS переключён на DoH‑fallback (Cloudflare, Google)</b>"
+    send_msg "✅ <b>DNS переключён на DoH‑fallback (Cloudflare)</b>"
   fi
 }
 
