@@ -230,11 +230,18 @@ while true; do
         
         EXT_IP=$(curl -s --connect-timeout 3 https://api.ipify.org || echo "Offline")
         
-        # Zapret Status
-        if [ "$(/etc/init.d/zapret status 2>&1)" = "running" ]; then
+        # Zapret2 Status
+        if /etc/init.d/zapret2 running 2>/dev/null; then
           ZAPRET_STATUS="✅ Активен"
         else
           ZAPRET_STATUS="❌ Не активен"
+        fi
+
+        # AdGuard Home Status (optional)
+        if [ -x /etc/init.d/adguardhome ] && /etc/init.d/adguardhome running 2>/dev/null; then
+          ADGUARD_STATUS="✅ Активен"
+        else
+          ADGUARD_STATUS="❌ Не активен"
         fi
         
         # Podkop Status & Config
@@ -268,7 +275,7 @@ while true; do
           PROXY_CONN="❌ Отключен"
         fi
         
-        STATUS_MSG="📊 <b>Статус роутера (Rosenberg)</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🏷 <b>Модель:</b> $MODEL\n💿 <b>Система:</b> $OS_VER\n⏱ <b>Uptime:</b> $UPTIME\n📈 <b>CPU Load:</b> $LOAD_AVG\n🧠 <b>ОЗУ:</b> ${MEM_USED} MB / ${MEM_TOTAL} MB (${MEM_PCT}%)\n💾 <b>Flash (/):</b> ${DISK_USED} / ${DISK_SIZE} (${DISK_PCT})\n👥 <b>Сессии NAT:</b> <code>$CONN_COUNT / $CONN_MAX</code>\n\n🌐 <b>Сеть (Multi-WAN)</b>\n├── 📶 <b>WAN (MGTS):</b> <code>$WAN1_IP</code> (eth0)\n├── 📶 <b>WANB (Starlink):</b> <code>$WAN2_IP</code> (eth1)\n└── 🌍 <b>Внешний IP:</b> <code>$EXT_IP</code>\n\n🥷 <b>Сервисы и Обход</b>\n├── 🥷 <b>Zapret:</b> $ZAPRET_STATUS\n├── 🕵️ <b>Podkop:</b> $PODKOP_STATUS\n├── 📡 <b>Сервер:</b> <code>$PODKOP_SERVER</code> ($PODKOP_IP)\n└── 🔌 <b>Прокси-соединение:</b> $PROXY_CONN\n━━━━━━━━━━━━━━━━━━━━━━"
+        STATUS_MSG="📊 <b>Статус роутера (Rosenberg)</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🏷 <b>Модель:</b> $MODEL\n💿 <b>Система:</b> $OS_VER\n⏱ <b>Uptime:</b> $UPTIME\n📈 <b>CPU Load:</b> $LOAD_AVG\n🧠 <b>ОЗУ:</b> ${MEM_USED} MB / ${MEM_TOTAL} MB (${MEM_PCT}%)\n💾 <b>Flash (/):</b> ${DISK_USED} / ${DISK_SIZE} (${DISK_PCT})\n👥 <b>Сессии NAT:</b> <code>$CONN_COUNT / $CONN_MAX</code>\n\n🌐 <b>Сеть (Multi-WAN)</b>\n├── 📶 <b>WAN (MGTS):</b> <code>$WAN1_IP</code> (eth0)\n├── 📶 <b>WANB (Starlink):</b> <code>$WAN2_IP</code> (eth1)\n└── 🌍 <b>Внешний IP:</b> <code>$EXT_IP</code>\n\n🥷 <b>Сервисы и Обход</b>\n├── 🥷 <b>Zapret2:</b> $ZAPRET_STATUS\n├── 🛡 <b>AdGuard Home:</b> $ADGUARD_STATUS\n├── 🕵️ <b>Podkop:</b> $PODKOP_STATUS\n├── 📡 <b>Сервер:</b> <code>$PODKOP_SERVER</code> ($PODKOP_IP)\n└── 🔌 <b>Прокси-соединение:</b> $PROXY_CONN\n━━━━━━━━━━━━━━━━━━━━━━"
         send_msg "$STATUS_MSG" "$KEYBOARD"
         ;;
       "/ping"|"⚡ Пинг")
@@ -471,7 +478,7 @@ while true; do
         
         PROXY_OK=0
         PROXY_IP="N/A"
-        if [ "$(/etc/init.d/zapret status 2>&1)" = "running" ] || [ "$(/etc/init.d/sing-box status 2>/dev/null || ubus call service list | grep -q sing-box)" = "running" ] || [ -f /var/run/sing-box.pid ]; then
+        if /etc/init.d/zapret2 running 2>/dev/null || [ "$(/etc/init.d/sing-box status 2>/dev/null || ubus call service list | grep -q sing-box)" = "running" ] || [ -f /var/run/sing-box.pid ]; then
           PROXY_TEST_IP=$(curl -s -x socks5h://127.0.0.1:4534 --connect-timeout 4 https://api.ipify.org)
           if [ -n "$PROXY_TEST_IP" ]; then
             PROXY_OK=1
@@ -612,4 +619,3 @@ while true; do
   done
   sleep 5
 done
-
