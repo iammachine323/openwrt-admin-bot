@@ -24,19 +24,55 @@ fi
 send_msg(){
   # Replace literal \n text sequences with actual newlines
   local text=$(echo -e "$1")
+  local legacy_text="$text"
   local markup="$2"
   local target_chat="${FROM_ID:-$CHAT_ID}"
+  local rich_message
+  local response
+  local no_rich_marker="/tmp/router_admin_bot.no_rich_messages"
+
+  # Turn the existing response templates into native Rich HTML blocks:
+  # promote a standalone bold first line to a heading and replace visual
+  # Unicode separators with semantic dividers.
+  text=$(printf '%s\n' "$text" | sed \
+    -e '1s|^\(.*\)<b>\(.*\)</b>$|<h3>\1\2</h3>|' \
+    -e 's|^━━━━━━━━━━━━━━━━━━━━━━$|<hr/>|' \
+    -e 's|$|<br/>|' \
+    -e 's|</h3><br/>$|</h3>|' \
+    -e 's|<hr/><br/>$|<hr/>|')
+
+  # Bot API 10.1 Rich Messages. Build JSON with jq so dynamic diagnostic
+  # output can't break the InputRichMessage payload. Existing HTML markup is
+  # valid Rich HTML and can use block elements such as headings and tables.
+  if [ ! -e "$no_rich_marker" ]; then
+    rich_message=$(jq -cn --arg html "$text" '{html:$html}')
+    if [ -n "$markup" ]; then
+      response=$(curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendRichMessage" \
+        -d chat_id="$target_chat" \
+        --data-urlencode "rich_message=${rich_message}" \
+        -d reply_markup="${markup}")
+    else
+      response=$(curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendRichMessage" \
+        -d chat_id="$target_chat" \
+        --data-urlencode "rich_message=${rich_message}")
+    fi
+
+    echo "$response" | jq -e '.ok == true' >/dev/null 2>&1 && return 0
+    touch "$no_rich_marker"
+  fi
+
+  # Compatibility fallback for older Bot API servers and unsupported chats.
   if [ -n "$markup" ]; then
     curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
       -d chat_id="$target_chat" \
       -d parse_mode="HTML" \
-      --data-urlencode "text=${text}" \
+      --data-urlencode "text=${legacy_text}" \
       -d reply_markup="${markup}" >/dev/null
   else
     curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
       -d chat_id="$target_chat" \
       -d parse_mode="HTML" \
-      --data-urlencode "text=${text}" >/dev/null
+      --data-urlencode "text=${legacy_text}" >/dev/null
   fi
 }
 
